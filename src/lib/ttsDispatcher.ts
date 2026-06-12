@@ -1,5 +1,5 @@
 export interface TTSSettings {
-  tts_engine?: 'auto' | 'elevenlabs' | 'kokoro' | 'disabled'
+  tts_engine?: 'auto' | 'elevenlabs' | 'kokoro' | 'webspeech' | 'disabled'
   elevenlabs_api_key?: string
   elevenlabs_voice_id?: string
   voice_stability?: number
@@ -9,8 +9,11 @@ export interface TTSSettings {
   language?: string
 }
 
-interface KokoroHook {
+export interface KokoroHook {
   speak: (text: string, voiceId: string, speed: number) => Promise<boolean>
+  stop: () => void
+  isReady?: boolean
+  isLoading?: boolean
 }
 
 function cleanText(text: string): string {
@@ -69,7 +72,11 @@ async function speakKokoro(
 ): Promise<boolean> {
   if (kokoroHook?.speak) {
     try {
-      return await kokoroHook.speak(text, settings.kokoro_voice || 'af_nicole', settings.voice_speed || 1.0)
+      return await kokoroHook.speak(
+        text,
+        settings.kokoro_voice || 'af_nicole',
+        settings.voice_speed || 1.0
+      )
     } catch {
       // fall through
     }
@@ -103,22 +110,40 @@ export async function speak(
   settings: TTSSettings,
   kokoroHook?: KokoroHook
 ): Promise<void> {
-  const engine = settings.tts_engine || 'auto'
   const clean = cleanText(text)
   if (!clean) return
 
-  // Hierarquia: ElevenLabs → Kokoro → WebSpeech
-  if (engine === 'elevenlabs' || engine === 'auto') {
+  // Override manual: usuario escolheu ElevenLabs explicitamente
+  if (settings.tts_engine === 'elevenlabs' && settings.elevenlabs_api_key) {
+    const ok = await speakElevenLabs(clean, settings)
+    if (ok) return
+    // Se ElevenLabs falhou, cai para Kokoro
+  }
+
+  // Override manual: usuario escolheu WebSpeech explicitamente
+  if (settings.tts_engine === 'webspeech') {
+    await speakWebSpeech(clean, settings)
+    return
+  }
+
+  // PRIMARIO: Kokoro (gratuito, roda no browser)
+  if (settings.tts_engine !== 'webspeech' && kokoroHook) {
+    try {
+      const ok = await speakKokoro(clean, settings, kokoroHook)
+      if (ok) return
+    } catch {
+      // fallthrough para ElevenLabs ou WebSpeech
+    }
+  }
+
+  // SECUNDARIO: ElevenLabs (se apiKey configurada e kokoro falhou)
+  if (settings.tts_engine === 'auto' && settings.elevenlabs_api_key) {
     const ok = await speakElevenLabs(clean, settings)
     if (ok) return
   }
 
-  if (engine === 'kokoro' || engine === 'auto') {
-    const ok = await speakKokoro(clean, settings, kokoroHook)
-    if (ok) return
-  }
-
-  if (engine !== 'disabled') {
+  // FALLBACK FINAL: Web Speech API (sempre disponivel)
+  if (settings.tts_engine !== 'disabled') {
     await speakWebSpeech(clean, settings)
   }
 }
