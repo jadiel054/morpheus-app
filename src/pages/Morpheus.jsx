@@ -65,8 +65,15 @@ export default function Morpheus() {
     if (authState === 'authenticated') {
       kairos.start()
       const onAction = () => kairos.recordUserAction()
-      window.addEventListener('keydown', onAction); window.addEventListener('touchstart', onAction)
-      return () => { kairos.stop(); window.removeEventListener('keydown', onAction); window.removeEventListener('touchstart', onAction) }
+      window.addEventListener('keydown', onAction)
+      window.addEventListener('mousemove', onAction)
+      window.addEventListener('touchstart', onAction)
+      return () => {
+        kairos.stop()
+        window.removeEventListener('keydown', onAction)
+        window.removeEventListener('mousemove', onAction)
+        window.removeEventListener('touchstart', onAction)
+      }
     }
   }, [authState])
 
@@ -153,13 +160,13 @@ export default function Morpheus() {
         completeLastStep(results.length + ' resultados')
       }
 
-      const systemPrompt = buildAgentSystemPrompt(agent?.key || null, personalityLayer + '\\n' + styleLayer, settings.language, settings.user_name, memoryPrompt)
-      const fullPrompt = searchContext ? text + '\\n\\n[DADOS ATUAIS DA WEB]\\n' + searchContext : text
+      const systemPrompt = buildAgentSystemPrompt(agent?.key || null, personalityLayer + '\n' + styleLayer, settings.language, settings.user_name, memoryPrompt)
+      const fullPrompt = searchContext ? text + '\n\n[DADOS ATUAIS DA WEB]\n' + searchContext : text
       const content = buildContentWithAttachments(fullPrompt, files)
       const history = activeTab.messages.slice(-10).map(m => ({ role: m.role, content: m.content }))
 
       addStep('Chamando LLM (Groq primario)...')
-      const result = await callAI(systemPrompt, typeof content === 'string' ? content : content.map(p => p.type === 'text' ? p.text : '').join('\\n'), history)
+      const result = await callAI(systemPrompt, typeof content === 'string' ? content : content.map(p => p.type === 'text' ? p.text : '').join('\n'), history)
       completeLastStep('Modelo: ' + (result.model || 'unknown'))
 
       const assistantMsg = { role: 'assistant', content: result.content, timestamp: Date.now(), model: result.model }
