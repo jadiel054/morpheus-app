@@ -3,7 +3,7 @@ import { Download, FileJson, FileCode, Database, Copy, Check, Loader2, GitBranch
 
 const GITHUB_API = 'https://api.github.com'
 
-function toBase64(str: string): string {
+function toBase64(str) {
   try { return btoa(unescape(encodeURIComponent(str))) }
   catch { return btoa(str) }
 }

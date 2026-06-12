@@ -1,3 +1,5 @@
+export const ALL_ACCEPT_TYPES = '.jpg,.jpeg,.png,.gif,.webp,.svg,.pdf,.docx,.xlsx,.xls,.csv,.html,.htm,.js,.ts,.jsx,.tsx,.py,.rs,.go,.java,.c,.cpp,.css,.json,.yaml,.yml,.md,.txt,.sh,.sql'
+
 export async function processFile(file) {
   const id = 'att_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7)
   const ext = file.name.split('.').pop()?.toLowerCase() || ''
