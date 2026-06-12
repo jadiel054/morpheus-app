@@ -13,6 +13,7 @@ export function useVoiceLive({ language = 'pt-BR', onTranscript, onInterim } = {
   const SILENCE_TIMEOUT = 2000
 
   useEffect(() => {
+    try {
     if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
       setError('Speech Recognition nao disponivel neste navegador.')
       return
@@ -82,6 +83,10 @@ export function useVoiceLive({ language = 'pt-BR', onTranscript, onInterim } = {
     return () => {
       try { rec.stop() } catch {}
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current)
+    }
+    } catch (err) {
+      console.error('[VoiceLive] Init error:', err)
+      setError('Erro ao inicializar reconhecimento de voz: ' + (err.message || 'desconhecido'))
     }
   }, [language])
 

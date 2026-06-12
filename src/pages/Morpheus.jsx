@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react'
+import { useState, useEffect, useRef, useCallback, lazy, Suspense, useMemo } from 'react'
 import { useAuth } from '../lib/authContext'
 import { ProtocolHeader } from '../components/morpheus/ProtocolHeader'
 import { ChatInput } from '../components/morpheus/ChatInput'
@@ -42,7 +42,8 @@ const DEFAULT_TAB = { id: 'tab-1', title: 'Nova Conversa', messages: [] }
 export default function Morpheus() {
   const { user, authState, signOut } = useAuth()
   const kokoro = useKokoroTTS()
-  const voiceLive = useVoiceLive({ language: 'pt-BR' })
+  const voiceLiveOptions = useMemo(() => ({ language: 'pt-BR' }), [])
+  const voiceLive = useVoiceLive(voiceLiveOptions)
 
   const [tabs, setTabs] = useState([{ ...DEFAULT_TAB }])
   const [activeTabId, setActiveTabId] = useState('tab-1')
