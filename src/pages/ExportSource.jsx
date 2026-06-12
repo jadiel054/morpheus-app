@@ -3,6 +3,11 @@ import { Download, FileJson, FileCode, Database, Copy, Check, Loader2, GitBranch
 
 const GITHUB_API = 'https://api.github.com'
 
+function toBase64(str: string): string {
+  try { return btoa(unescape(encodeURIComponent(str))) }
+  catch { return btoa(str) }
+}
+
 export default function ExportSource() {
   const [format, setFormat] = useState('json')
   const [includeOptions, setIncludeOptions] = useState({
@@ -35,17 +40,17 @@ export default function ExportSource() {
     setExporting(true)
     const result = {
       metadata: { exportedAt: new Date().toISOString(), version: '1.0.0', project: 'MORPHEUS Nebuchadnezzar' },
-      modules: {} as Record<string, Array<{ file?: string; path?: string; note?: string }>>,
+      modules: {},
     }
 
     for (const [key, path] of Object.entries(modulePaths)) {
       if (!includeOptions[key]) continue
       if (key === 'config') {
-        result.modules[key] = configFiles.map(f => ({ file: f, note: `// ${f} — included in repo` }))
+        result.modules[key] = configFiles.map(f => ({ file: f, note: '// ' + f + ' \u2014 included in repo' }))
       } else if (key === 'css') {
         result.modules[key] = [{ file: 'src/index.css', note: '/* Full CSS included in repository */' }]
       } else {
-        result.modules[key] = [{ path, note: `All files under ${path}/ included in repository` }]
+        result.modules[key] = [{ path, note: 'All files under ' + path + '/ included in repository' }]
       }
     }
 
@@ -67,7 +72,7 @@ export default function ExportSource() {
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `morpheus-source-${Date.now()}.${format === 'json' ? 'json' : format === 'markdown' ? 'md' : 'txt'}`
+    a.download = 'morpheus-source-' + Date.now() + '.' + (format === 'json' ? 'json' : format === 'markdown' ? 'md' : 'txt')
     a.click()
     URL.revokeObjectURL(url)
   }
@@ -91,64 +96,67 @@ export default function ExportSource() {
     try {
       const data = exportResult || await collectSource()
       const content = JSON.stringify(data, null, 2)
-      const fileName = `morpheus-export-${Date.now()}.json`
-      const filePath = `exports/${fileName}`
+      const fileName = 'morpheus-export-' + Date.now() + '.json'
+      const filePath = 'exports/' + fileName
 
-      // Step 1: GET /repos/{owner}/{repo}/git/ref/heads/{branch} → main sha
-      const refRes = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/git/ref/heads/${branchInput}`, {
-        headers: { Authorization: 'Bearer ' + githubToken, Accept: 'application/vnd.github+json' }
-      })
+      const headers = {
+        Authorization: 'Bearer ' + githubToken,
+        'Content-Type': 'application/json',
+        Accept: 'application/vnd.github+json',
+      }
+
+      // Step 1: GET ref → current commit sha
+      const refRes = await fetch(GITHUB_API + '/repos/' + owner + '/' + repo + '/git/ref/heads/' + branchInput, { headers })
       if (!refRes.ok) throw new Error('Failed to get branch ref: ' + refRes.status)
       const refData = await refRes.json()
       const mainSha = refData.object.sha
 
-      // Step 2: POST /repos/{owner}/{repo}/git/blobs → blob sha
-      const blobRes = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/git/blobs`, {
+      // Step 2: POST /git/blobs → blob sha (base64 encoded)
+      const base64Content = toBase64(content)
+      const blobRes = await fetch(GITHUB_API + '/repos/' + owner + '/' + repo + '/git/blobs', {
         method: 'POST',
-        headers: { Authorization: 'Bearer ' + githubToken, 'Content-Type': 'application/json', Accept: 'application/vnd.github+json' },
-        body: JSON.stringify({ content, encoding: 'utf-8' })
+        headers,
+        body: JSON.stringify({ content: base64Content, encoding: 'base64' }),
       })
       if (!blobRes.ok) throw new Error('Failed to create blob: ' + blobRes.status)
       const blobData = await blobRes.json()
 
-      // Step 3: GET base tree sha from the commit
-      const commitRes = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/git/commits/${mainSha}`, {
-        headers: { Authorization: 'Bearer ' + githubToken, Accept: 'application/vnd.github+json' }
-      })
+      // Step 3: GET commit → base tree sha
+      const commitRes = await fetch(GITHUB_API + '/repos/' + owner + '/' + repo + '/git/commits/' + mainSha, { headers })
       if (!commitRes.ok) throw new Error('Failed to get commit: ' + commitRes.status)
       const commitData = await commitRes.json()
       const baseTreeSha = commitData.tree.sha
 
-      // Step 4: POST /repos/{owner}/{repo}/git/trees → new tree sha
-      const treeRes = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/git/trees`, {
+      // Step 4: POST /git/trees → new tree sha
+      const treeRes = await fetch(GITHUB_API + '/repos/' + owner + '/' + repo + '/git/trees', {
         method: 'POST',
-        headers: { Authorization: 'Bearer ' + githubToken, 'Content-Type': 'application/json', Accept: 'application/vnd.github+json' },
+        headers,
         body: JSON.stringify({
           base_tree: baseTreeSha,
-          tree: [{ path: filePath, mode: '100644', type: 'blob', sha: blobData.sha }]
-        })
+          tree: [{ path: filePath, mode: '100644', type: 'blob', sha: blobData.sha }],
+        }),
       })
       if (!treeRes.ok) throw new Error('Failed to create tree: ' + treeRes.status)
       const treeData = await treeRes.json()
 
-      // Step 5: POST /repos/{owner}/{repo}/git/commits → commit sha
-      const newCommitRes = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/git/commits`, {
+      // Step 5: POST /git/commits → new commit sha
+      const newCommitRes = await fetch(GITHUB_API + '/repos/' + owner + '/' + repo + '/git/commits', {
         method: 'POST',
-        headers: { Authorization: 'Bearer ' + githubToken, 'Content-Type': 'application/json', Accept: 'application/vnd.github+json' },
+        headers,
         body: JSON.stringify({
-          message: `export: MORPHEUS source export ${new Date().toISOString()}`,
+          message: 'export: MORPHEUS source export ' + new Date().toISOString(),
           tree: treeData.sha,
-          parents: [mainSha]
-        })
+          parents: [mainSha],
+        }),
       })
       if (!newCommitRes.ok) throw new Error('Failed to create commit: ' + newCommitRes.status)
       const newCommitData = await newCommitRes.json()
 
-      // Step 6: PATCH /repos/{owner}/{repo}/git/refs/heads/{branch} → update ref
-      const updateRefRes = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/git/refs/heads/${branchInput}`, {
+      // Step 6: PATCH refs/heads → update branch pointer
+      const updateRefRes = await fetch(GITHUB_API + '/repos/' + owner + '/' + repo + '/git/refs/heads/' + branchInput, {
         method: 'PATCH',
-        headers: { Authorization: 'Bearer ' + githubToken, 'Content-Type': 'application/json', Accept: 'application/vnd.github+json' },
-        body: JSON.stringify({ sha: newCommitData.sha, force: false })
+        headers,
+        body: JSON.stringify({ sha: newCommitData.sha, force: false }),
       })
       if (!updateRefRes.ok) throw new Error('Failed to update ref: ' + updateRefRes.status)
 
@@ -159,7 +167,7 @@ export default function ExportSource() {
         repo: repoInput,
         branch: branchInput,
       })
-    } catch (err: any) {
+    } catch (err) {
       setPushResult({ error: err.message })
     } finally {
       setPushing(false)
@@ -222,7 +230,7 @@ export default function ExportSource() {
           <div className="export-section-title">Formato</div>
           <div className="export-format-tabs">
             {['json', 'markdown', 'text'].map(f => (
-              <button key={f} className={`export-format-tab ${format === f ? 'export-format-tab--active' : ''}`} onClick={() => setFormat(f)}>
+              <button key={f} className={'export-format-tab' + (format === f ? ' export-format-tab--active' : '')} onClick={() => setFormat(f)}>
                 {f === 'json' ? 'JSON' : f === 'markdown' ? 'Markdown' : 'Texto'}
               </button>
             ))}
@@ -232,8 +240,8 @@ export default function ExportSource() {
         <div className="export-section">
           <div className="export-section-title">Modulos</div>
           {modules.map(({ key, label, path }) => (
-            <div key={key} className={`export-option ${includeOptions[key] ? 'export-option--active' : ''}`} onClick={() => toggleOption(key)}>
-              <div className={`export-checkbox ${includeOptions[key] ? 'export-checkbox--active' : ''}`}>
+            <div key={key} className={'export-option' + (includeOptions[key] ? ' export-option--active' : '')} onClick={() => toggleOption(key)}>
+              <div className={'export-checkbox' + (includeOptions[key] ? ' export-checkbox--active' : '')}>
                 {includeOptions[key] && <Check size={10} color="#050a0f" />}
               </div>
               <span className="export-option-label">{label}</span>
@@ -274,7 +282,7 @@ export default function ExportSource() {
         )}
 
         {pushResult && (
-          <div className={`export-result ${pushResult.error ? 'export-result--error' : ''}`}>
+          <div className={'export-result' + (pushResult.error ? ' export-result--error' : '')}>
             {pushResult.error ? (
               <span>Erro: {pushResult.error}</span>
             ) : (
@@ -291,26 +299,26 @@ export default function ExportSource() {
   )
 }
 
-function generateMarkdown(data: any): string {
+function generateMarkdown(data) {
   let md = '# MORPHEUS Nebuchadnezzar v1.0 — Source Export\n\n'
-  md += `**Exportado**: ${data.metadata.exportedAt}\n**Versao**: ${data.metadata.version}\n\n`
+  md += '**Exportado**: ' + data.metadata.exportedAt + '\n**Versao**: ' + data.metadata.version + '\n\n'
   md += '## Modulos\n\n'
-  for (const [key, files] of Object.entries(data.modules) as [string, any[]][]) {
-    md += `### ${key}\n\n`
-    for (const f of files) md += `- **${f.file || f.path}**\n`
+  for (const [key, files] of Object.entries(data.modules)) {
+    md += '### ' + key + '\n\n'
+    for (const f of files) md += '- **' + (f.file || f.path) + '**\n'
     md += '\n'
   }
   md += '\n---\n*Gerado por MORPHEUS Nebuchadnezzar v1.0*\n'
   return md
 }
 
-function generatePlainText(data: any): string {
+function generatePlainText(data) {
   let txt = 'MORPHEUS Nebuchadnezzar v1.0 — Source Export\n'
   txt += '='.repeat(50) + '\n\n'
-  txt += `Exportado: ${data.metadata.exportedAt}\nVersao: ${data.metadata.version}\n\n`
-  for (const [key, files] of Object.entries(data.modules) as [string, any[]][]) {
-    txt += `[${key}]\n`
-    for (const f of files) txt += `  ${f.file || f.path}\n`
+  txt += 'Exportado: ' + data.metadata.exportedAt + '\nVersao: ' + data.metadata.version + '\n\n'
+  for (const [key, files] of Object.entries(data.modules)) {
+    txt += '[' + key + ']\n'
+    for (const f of files) txt += '  ' + (f.file || f.path) + '\n'
     txt += '\n'
   }
   return txt
