@@ -1,100 +1,155 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useRef, useState, useCallback } from 'react'
 
-const KOKORO_VOICES = [
-  { id: 'af_nicole', name: 'Nicole', gender: 'female', accent: 'US', quality: 'high' },
-  { id: 'af_bella', name: 'Bella', gender: 'female', accent: 'US', quality: 'high' },
-  { id: 'af_sarah', name: 'Sarah', gender: 'female', accent: 'US', quality: 'high' },
-  { id: 'af_sky', name: 'Sky', gender: 'female', accent: 'US', quality: 'high' },
-  { id: 'am_adam', name: 'Adam', gender: 'male', accent: 'US', quality: 'high' },
-  { id: 'am_michael', name: 'Michael', gender: 'male', accent: 'US', quality: 'high' },
-  { id: 'bf_emma', name: 'Emma', gender: 'female', accent: 'UK', quality: 'high' },
-  { id: 'bf_isabella', name: 'Isabella', gender: 'female', accent: 'UK', quality: 'high' },
-  { id: 'bm_george', name: 'George', gender: 'male', accent: 'UK', quality: 'high' },
-  { id: 'bm_lewis', name: 'Lewis', gender: 'male', accent: 'UK', quality: 'high' },
+// Kokoro é carregado via CDN em runtime — NUNCA bundlado pelo Vite
+// Isso evita OOM no esbuild e mantém o bundle leve
+const KOKORO_CDN = 'https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/dist/kokoro.min.js'
+
+export const KOKORO_VOICES = [
+  { id: 'af_nicole',  name: 'Nicole',  gender: 'F', style: 'natural' },
+  { id: 'af_sky',     name: 'Sky',     gender: 'F', style: 'warm' },
+  { id: 'af_heart',   name: 'Heart',   gender: 'F', style: 'empathetic' },
+  { id: 'af_sarah',   name: 'Sarah',   gender: 'F', style: 'professional' },
+  { id: 'am_eric',    name: 'Eric',    gender: 'M', style: 'deep' },
+  { id: 'am_michael', name: 'Michael', gender: 'M', style: 'robotic' },
+  { id: 'am_adam',    name: 'Adam',    gender: 'M', style: 'cinematic' },
 ]
 
-const SPEED_OPTIONS = [
-  { value: 0.75, label: '0.75x' },
-  { value: 0.9, label: '0.9x' },
-  { value: 1.0, label: '1.0x' },
-  { value: 1.25, label: '1.25x' },
-]
+// Cache global do módulo carregado (persiste entre renders)
+let kokoroModuleCache = null
+let kokoroInstanceCache = null
+
+async function loadKokoroFromCDN() {
+  // Já carregado anteriormente
+  if (kokoroInstanceCache) return kokoroInstanceCache
+
+  // Carrega o script via CDN dinamicamente se ainda não estiver na página
+  if (!kokoroModuleCache) {
+    await new Promise((resolve, reject) => {
+      // Verifica se já foi injetado
+      if (document.querySelector(`script[data-kokoro]`)) {
+        resolve()
+        return
+      }
+      const script = document.createElement('script')
+      script.src = KOKORO_CDN
+      script.setAttribute('data-kokoro', 'true')
+      script.onload = resolve
+      script.onerror = () => reject(new Error('Falha ao carregar Kokoro via CDN'))
+      document.head.appendChild(script)
+    })
+    kokoroModuleCache = window.KokoroTTS || window.kokoro
+  }
+
+  if (!kokoroModuleCache) {
+    throw new Error('Kokoro não encontrado após carregamento do CDN')
+  }
+
+  // Instancia o modelo ONNX (q8 = quantizado, mais leve)
+  const KokoroTTS = kokoroModuleCache.KokoroTTS || kokoroModuleCache
+  kokoroInstanceCache = await KokoroTTS.from_pretrained(
+    'onnx-community/Kokoro-82M-ONNX',
+    { dtype: 'q8', device: 'wasm' }
+  )
+  return kokoroInstanceCache
+}
 
 export function useKokoroTTS() {
   const [isSpeaking, setIsSpeaking] = useState(false)
-  const [isLoading, setIsLoading] = useState(false)
-  const [isReady, setIsReady] = useState(false)
-  const [voices, setVoices] = useState(KOKORO_VOICES)
-  const [currentVoice, setCurrentVoice] = useState('af_nicole')
-  const [speed, setSpeed] = useState(1.0)
-  const workerRef = useRef(null)
-  const audioCtxRef = useRef(null)
+  const [isLoading,  setIsLoading]  = useState(false)
+  const [isReady,    setIsReady]    = useState(false)
+  const [error,      setError]      = useState(null)
+  const audioRef = useRef(null)
+  const currentVoiceRef = useRef('af_nicole')
 
-  useEffect(() => {
-    let cancelled = false
-    async function init() {
-      try {
-        const { KokoroTTS } = await import('kokoro-js')
-        const tts = await KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.1-ONNX', { dtype: 'fp32' })
-        if (cancelled) return
-        workerRef.current = tts
-        const availableVoices = await tts.list_voices()
-        if (availableVoices?.length) {
-          const merged = KOKORO_VOICES.map(kv => {
-            const av = availableVoices.find(v => v === kv.id)
-            return av ? kv : { ...kv, quality: 'unavailable' }
-          })
-          setVoices(merged)
-        }
-        setIsReady(true)
-      } catch (err) {
-        console.warn('[Kokoro] Init failed, falling back to Web Speech:', err.message)
-        setIsReady(false)
-      }
-    }
-    init()
-    return () => { cancelled = true; if (workerRef.current?.destroy) workerRef.current.destroy() }
-  }, [])
+  const speak = useCallback(async (
+    text,
+    voice = 'af_nicole',
+    speed = 1.0,
+    onDone
+  ) => {
+    stop()
+    setError(null)
+    currentVoiceRef.current = voice
 
-  const speak = useCallback(async (text, voiceId = currentVoice, spd = speed) => {
-    if (!text?.trim() || !isReady || !workerRef.current) return false
-    setIsLoading(true)
-    const clean = text.replace(/```[\s\S]*?```/g, 'bloco de codigo').replace(/`[^`]+`/g, '').replace(/https?:\/\/\S+/g, 'link').replace(/[#_*~\[\]]/g, '').replace(/\n+/g, ' ').trim().slice(0, 500)
-    if (!clean) { setIsLoading(false); return false }
     try {
-      const tts = workerRef.current
-      const audio = await tts.generate(clean, { voice: voiceId, speed: spd })
-      if (!audioCtxRef.current) audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)()
-      const ctx = audioCtxRef.current
-      const buffer = ctx.createBuffer(1, audio.samples.length, audio.sample_rate)
-      buffer.getChannelData(0).set(audio.samples)
-      const source = ctx.createBufferSource()
-      source.buffer = buffer
-      source.connect(ctx.destination)
+      setIsLoading(true)
+      const tts = await loadKokoroFromCDN()
+      setIsReady(true)
       setIsLoading(false)
       setIsSpeaking(true)
-      source.onended = () => setIsSpeaking(false)
-      source.start()
-      return true
-    } catch (err) {
-      console.error('[Kokoro] Speak error:', err)
-      setIsLoading(false)
-      return false
-    }
-  }, [isReady, currentVoice, speed])
 
-  const previewVoice = useCallback(async (voiceId) => {
-    const sample = 'Ola, eu sou a voz ' + (KOKORO_VOICES.find(v => v.id === voiceId)?.name || voiceId) + '. Testando o sistema de voz Kokoro.'
-    return speak(sample, voiceId, 1.0)
-  }, [speak])
+      const audio = await tts.generate(text, { voice, speed })
+
+      // Kokoro retorna AudioBuffer ou Blob dependendo da versão
+      let audioUrl
+      if (audio instanceof Blob) {
+        audioUrl = URL.createObjectURL(audio)
+      } else if (audio?.blob) {
+        audioUrl = URL.createObjectURL(audio.blob)
+      } else {
+        // Fallback: tenta converter ArrayBuffer
+        const blob = new Blob([audio], { type: 'audio/wav' })
+        audioUrl = URL.createObjectURL(blob)
+      }
+
+      const audioEl = new Audio(audioUrl)
+      audioRef.current = audioEl
+
+      audioEl.onended = () => {
+        setIsSpeaking(false)
+        URL.revokeObjectURL(audioUrl)
+        onDone?.()
+      }
+
+      audioEl.onerror = () => {
+        setIsSpeaking(false)
+        URL.revokeObjectURL(audioUrl)
+        setError('Erro ao reproduzir áudio Kokoro')
+      }
+
+      await audioEl.play()
+    } catch (err) {
+      console.error('[Kokoro] Erro:', err)
+      setError(err.message)
+      setIsLoading(false)
+      setIsSpeaking(false)
+      // Não relança — deixa o ttsDispatcher fazer fallback para WebSpeech
+      throw err
+    }
+  }, [])
 
   const stop = useCallback(() => {
-    if (audioCtxRef.current) {
-      audioCtxRef.current.close().catch(() => {})
-      audioCtxRef.current = null
+    if (audioRef.current) {
+      audioRef.current.pause()
+      audioRef.current.onended = null
+      audioRef.current = null
     }
     setIsSpeaking(false)
   }, [])
 
-  return { speak, stop, previewVoice, isSpeaking, isLoading, isReady, voices, currentVoice, setCurrentVoice, speed, setSpeed, speedOptions: SPEED_OPTIONS }
+  const preload = useCallback(async () => {
+    // Pré-carrega o modelo em background (chamado na splash screen)
+    if (isReady || isLoading) return
+    try {
+      setIsLoading(true)
+      await loadKokoroFromCDN()
+      setIsReady(true)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setIsLoading(false)
+    }
+  }, [isReady, isLoading])
+
+  return {
+    isSpeaking,
+    isLoading,
+    isReady,
+    error,
+    speak,
+    stop,
+    preload,
+    voices: KOKORO_VOICES,
+    currentVoice: currentVoiceRef.current,
+  }
 }
