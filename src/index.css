@@ -5,8 +5,29 @@
 :root { --cyan: #00FFFF; --electric-blue: #0080FF; --dark-bg: #050a0f; --dark-card: #0a1520; --dark-border: #0d2030; --teal-dark: #003344; }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
-html, body, #root { height: 100%; width: 100%; overflow: hidden; }
-body { background-color: var(--dark-bg); color: var(--cyan); font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace; -webkit-font-smoothing: antialiased; }
+html, body, #root { height: 100%; width: 100%; min-height: 100vh; }
+body { background-color: var(--dark-bg); color: var(--cyan); font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace; -webkit-font-smoothing: antialiased; }
+
+/* Touch targets minimos para mobile */
+button, [role="button"], input, select, textarea {
+  min-height: 44px;
+  min-width: 44px;
+}
+
+/* Evita zoom no input em iOS/Android */
+input, textarea, select {
+  font-size: 16px !important;
+}
+
+/* Scroll suave */
+html {
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+}
+
+.font-orbitron {
+  font-family: 'Orbitron', monospace;
+}
 
 ::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-track { background: var(--dark-bg); }

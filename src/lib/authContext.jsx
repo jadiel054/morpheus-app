@@ -10,19 +10,40 @@ export function AuthProvider({ children }) {
   const [authState, setAuthState] = useState('loading')
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session)
-      setUser(session?.user ?? null)
-      setAuthState(session ? 'authenticated' : 'unauthenticated')
+    let cancelled = false
+    try {
+      supabase.auth.getSession().then(({ data }) => {
+        if (cancelled) return
+        const s = data?.session ?? null
+        setSession(s)
+        setUser(s?.user ?? null)
+        setAuthState(s ? 'authenticated' : 'unauthenticated')
+        setLoading(false)
+      }).catch((err) => {
+        console.error('[Auth] getSession error:', err)
+        if (!cancelled) {
+          setAuthState('unauthenticated')
+          setLoading(false)
+        }
+      })
+
+      const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, s) => {
+        if (cancelled) return
+        setSession(s)
+        setUser(s?.user ?? null)
+        setAuthState(s ? 'authenticated' : 'unauthenticated')
+        setLoading(false)
+      })
+
+      return () => {
+        cancelled = true
+        subscription?.unsubscribe()
+      }
+    } catch (err) {
+      console.error('[Auth] Init error:', err)
+      setAuthState('unauthenticated')
       setLoading(false)
-    })
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session)
-      setUser(session?.user ?? null)
-      setAuthState(session ? 'authenticated' : 'unauthenticated')
-      setLoading(false)
-    })
-    return () => subscription.unsubscribe()
+    }
   }, [])
 
   const signIn = useCallback(async (email, password) => {
@@ -44,6 +65,18 @@ export function AuthProvider({ children }) {
     setSession(null)
     setAuthState('unauthenticated')
   }, [])
+
+  if (loading) {
+    return (
+      <div style={{ background: '#050a0f', minHeight: '100vh', display: 'flex',
+        alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ color: '#00FFFF', fontFamily: 'monospace', textAlign: 'center' }}>
+          <div className="ldrs-helix" style={{ margin: '0 auto 16px' }} />
+          <div>MORPHEUS INICIALIZANDO...</div>
+        </div>
+      </div>
+    )
+  }
 
   const value = { user, session, loading, authState, signIn, signInWithMagicLink, signOut }
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

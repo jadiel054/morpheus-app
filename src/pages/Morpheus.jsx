@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react'
 import { useAuth } from '../lib/authContext'
 import { ProtocolHeader } from '../components/morpheus/ProtocolHeader'
 import { ChatInput } from '../components/morpheus/ChatInput'
@@ -8,11 +8,7 @@ import { ThinkingStatus } from '../components/morpheus/ThinkingStatus'
 import { HudOverlay } from '../components/morpheus/HudOverlay'
 import { SplashScreen } from '../components/morpheus/SplashScreen'
 import { LoginScreen } from '../components/morpheus/LoginScreen'
-import { SettingsPanel } from '../components/morpheus/SettingsPanel'
-import { ConversationHistory } from '../components/morpheus/ConversationHistory'
-import { DeployMonitor } from '../components/morpheus/DeployMonitor'
 import { CombatModeBar } from '../components/morpheus/CombatModeBar'
-import { ObservabilityPanel } from '../components/morpheus/ObservabilityPanel'
 import { BiometricGate } from '../components/morpheus/BiometricGate'
 import { NewDeviceChallenge } from '../components/morpheus/NewDeviceChallenge'
 import { generateId, truncate } from '../lib/utils'
@@ -28,6 +24,18 @@ import { kairos } from '../components/morpheus/agents/kairosEngine'
 import { getDeviceId, getDeviceLabel, getIpInfo, isDeviceTrusted, trustDevice, registerSession } from '../components/morpheus/security/deviceGuard'
 import { buildContentWithAttachments } from '../lib/fileAttachmentHandler'
 import { shouldAutoSearch, webSearch, formatSearchResults } from '../components/morpheus/tools/webSearch'
+
+// Componentes pesados — lazy load
+const SettingsPanel = lazy(() => import('../components/morpheus/SettingsPanel'))
+const ConversationHistory = lazy(() => import('../components/morpheus/ConversationHistory'))
+const DeployMonitor = lazy(() => import('../components/morpheus/DeployMonitor'))
+const ObservabilityPanel = lazy(() => import('../components/morpheus/ObservabilityPanel'))
+
+const LazyFallback = () => (
+  <div style={{ display: 'flex', justifyContent: 'center', padding: '20px' }}>
+    <div className="ldrs-dot-pulse"><span/><span/><span/></div>
+  </div>
+)
 
 const DEFAULT_TAB = { id: 'tab-1', title: 'Nova Conversa', messages: [] }
 
@@ -205,16 +213,16 @@ export default function Morpheus() {
       <CombatModeBar active={combatMode} />
       <ProtocolHeader protocolId="NEBUCHADNEZZAR v1.0" onOpenSettings={() => setShowBiometric(true)} onOpenHistory={() => setShowHistory(true)} onOpenObservability={() => setShowObservability(true)} combatMode={combatMode} onSignOut={() => signOut()} />
       <ConversationTabs tabs={tabs} activeTabId={activeTabId} onSelect={setActiveTabId} onClose={closeTab} onCreate={createTab} />
-      <DeployMonitor />
+      <Suspense fallback={<LazyFallback />}><DeployMonitor /></Suspense>
       <div className="flex-1 overflow-y-auto">
         {activeTab.messages.map((msg, i) => <MessageBubble key={i} message={msg} isSpeaking={isSpeaking} onSpeak={handleSpeak} onRegenerate={handleRegenerate} />)}
         <ThinkingStatus steps={thinkingSteps} isLoading={isLoading} />
         <div ref={messagesEndRef} />
       </div>
       <ChatInput onSend={handleSend} isLoading={isLoading} isListening={false} onToggleMic={() => {}} isSpeaking={isSpeaking} isLiveVoice={voiceLive.isLive} onToggleLive={() => voiceLive.isLive ? voiceLive.stop() : voiceLive.start()} />
-      {showSettings && <SettingsPanel settings={settings} onUpdate={updateSettings} onClose={() => setShowSettings(false)} />}
-      {showHistory && <ConversationHistory onClose={() => setShowHistory(false)} onLoad={() => setShowHistory(false)} />}
-      {showObservability && <ObservabilityPanel onClose={() => setShowObservability(false)} />}
+      {showSettings && <Suspense fallback={<LazyFallback />}><SettingsPanel settings={settings} onUpdate={updateSettings} onClose={() => setShowSettings(false)} /></Suspense>}
+      {showHistory && <Suspense fallback={<LazyFallback />}><ConversationHistory onClose={() => setShowHistory(false)} onLoad={() => setShowHistory(false)} /></Suspense>}
+      {showObservability && <Suspense fallback={<LazyFallback />}><ObservabilityPanel onClose={() => setShowObservability(false)} /></Suspense>}
       {showBiometric && <BiometricGate onSuccess={() => { setShowBiometric(false); setShowSettings(true) }} onCancel={() => setShowBiometric(false)} />}
       {deviceChallenge && <NewDeviceChallenge deviceInfo={deviceChallenge} onTrust={() => { trustDevice(deviceChallenge.deviceId); setDeviceChallenge(null) }} onBlock={() => { window.location.href = '/SecurityBlock' }} />}
     </div>
