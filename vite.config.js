@@ -5,6 +5,7 @@ export default defineConfig({
   plugins: [react()],
   build: {
     outDir: 'dist',
+    minify: false,
     sourcemap: true,
     rollupOptions: {
       // Sem externals — kokoro não está mais no bundle
