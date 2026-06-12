@@ -51,7 +51,7 @@ export default function Morpheus() {
 
   const [settings, setSettings] = useState(() => {
     try { return JSON.parse(localStorage.getItem('morpheus_settings')) || def() } catch { return def() }
-    function def() { return { assistant_name: 'MORPHEUS', user_name: 'Jadiel', preferred_city: 'Xanxere/SC', language: 'pt-BR', tts_engine: 'kokoro', kokoro_voice: 'af_nicole', voice_speed: 1.0, ai_model: 'auto', sarcasm_level: 30 } }
+    function def() { return { assistant_name: 'MORPHEUS', user_name: 'Jadiel', preferred_city: 'Xanxere/SC', language: 'pt-BR', tts_engine: 'auto', kokoro_voice: 'af_nicole', voice_speed: 1.0, ai_model: 'auto', sarcasm_level: 30 } }
   })
 
   const [evolution, setEvolution] = useState(() => loadEvolutionProfile(user?.id || 'local'))
@@ -64,15 +64,17 @@ export default function Morpheus() {
   useEffect(() => {
     if (authState === 'authenticated') {
       kairos.start()
-      const onAction = () => kairos.recordUserAction()
-      window.addEventListener('keydown', onAction)
-      window.addEventListener('mousemove', onAction)
-      window.addEventListener('touchstart', onAction)
+      const onUserAction = () => kairos.recordUserAction()
+      window.addEventListener('keydown',    onUserAction, { passive: true })
+      window.addEventListener('mousemove',  onUserAction, { passive: true })
+      window.addEventListener('touchstart', onUserAction, { passive: true })
+      window.addEventListener('click',      onUserAction, { passive: true })
       return () => {
         kairos.stop()
-        window.removeEventListener('keydown', onAction)
-        window.removeEventListener('mousemove', onAction)
-        window.removeEventListener('touchstart', onAction)
+        window.removeEventListener('keydown',    onUserAction)
+        window.removeEventListener('mousemove',  onUserAction)
+        window.removeEventListener('touchstart', onUserAction)
+        window.removeEventListener('click',      onUserAction)
       }
     }
   }, [authState])
