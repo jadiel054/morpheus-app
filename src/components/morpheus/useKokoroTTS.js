@@ -1,36 +1,100 @@
-import { useRef, useState, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 
-export const KOKORO_VOICES = [
-  { id: 'af_nicole', name: 'Nicole', gender: 'F', lang: 'en-US', style: 'natural' },
-  { id: 'af_sky', name: 'Sky', gender: 'F', lang: 'en-US', style: 'warm' },
-  { id: 'af_heart', name: 'Heart', gender: 'F', lang: 'en-US', style: 'empathetic' },
-  { id: 'am_eric', name: 'Eric', gender: 'M', lang: 'en-US', style: 'deep' },
-  { id: 'am_michael', name: 'Michael', gender: 'M', lang: 'en-US', style: 'robotic' },
-  { id: 'am_adam', name: 'Adam', gender: 'M', lang: 'en-US', style: 'cinematic' },
+const KOKORO_VOICES = [
+  { id: 'af_nicole', name: 'Nicole', gender: 'female', accent: 'US', quality: 'high' },
+  { id: 'af_bella', name: 'Bella', gender: 'female', accent: 'US', quality: 'high' },
+  { id: 'af_sarah', name: 'Sarah', gender: 'female', accent: 'US', quality: 'high' },
+  { id: 'af_sky', name: 'Sky', gender: 'female', accent: 'US', quality: 'high' },
+  { id: 'am_adam', name: 'Adam', gender: 'male', accent: 'US', quality: 'high' },
+  { id: 'am_michael', name: 'Michael', gender: 'male', accent: 'US', quality: 'high' },
+  { id: 'bf_emma', name: 'Emma', gender: 'female', accent: 'UK', quality: 'high' },
+  { id: 'bf_isabella', name: 'Isabella', gender: 'female', accent: 'UK', quality: 'high' },
+  { id: 'bm_george', name: 'George', gender: 'male', accent: 'UK', quality: 'high' },
+  { id: 'bm_lewis', name: 'Lewis', gender: 'male', accent: 'UK', quality: 'high' },
+]
+
+const SPEED_OPTIONS = [
+  { value: 0.75, label: '0.75x' },
+  { value: 0.9, label: '0.9x' },
+  { value: 1.0, label: '1.0x' },
+  { value: 1.25, label: '1.25x' },
 ]
 
 export function useKokoroTTS() {
   const [isSpeaking, setIsSpeaking] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [isReady, setIsReady] = useState(false)
-  const ttsRef = useRef(null)
-  const audioRef = useRef(null)
+  const [voices, setVoices] = useState(KOKORO_VOICES)
+  const [currentVoice, setCurrentVoice] = useState('af_nicole')
+  const [speed, setSpeed] = useState(1.0)
+  const workerRef = useRef(null)
+  const audioCtxRef = useRef(null)
 
-  const loadModel = useCallback(async () => {
-    if (ttsRef.current) return true
-    setIsLoading(true)
-    try { const { KokoroTTS } = await import('kokoro-js'); ttsRef.current = await KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-ONNX', { dtype: 'q8' }); setIsReady(true); return true }
-    catch (err) { console.error('[Kokoro]', err); return false }
-    finally { setIsLoading(false) }
+  useEffect(() => {
+    let cancelled = false
+    async function init() {
+      try {
+        const { KokoroTTS } = await import('kokoro-js')
+        const tts = await KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.1-ONNX', { dtype: 'fp32' })
+        if (cancelled) return
+        workerRef.current = tts
+        const availableVoices = await tts.list_voices()
+        if (availableVoices?.length) {
+          const merged = KOKORO_VOICES.map(kv => {
+            const av = availableVoices.find(v => v === kv.id)
+            return av ? kv : { ...kv, quality: 'unavailable' }
+          })
+          setVoices(merged)
+        }
+        setIsReady(true)
+      } catch (err) {
+        console.warn('[Kokoro] Init failed, falling back to Web Speech:', err.message)
+        setIsReady(false)
+      }
+    }
+    init()
+    return () => { cancelled = true; if (workerRef.current?.destroy) workerRef.current.destroy() }
   }, [])
 
-  const speak = useCallback(async (text, voice = 'af_nicole', speed = 1.0, onDone) => {
-    stop(); const loaded = await loadModel(); if (!loaded || !ttsRef.current) return
-    try { setIsSpeaking(true); const audio = await ttsRef.current.generate(text, { voice, speed }); audioRef.current = audio; audio.play(); audio.onended = () => { setIsSpeaking(false); onDone?.() } }
-    catch (err) { console.error('[Kokoro]', err); setIsSpeaking(false) }
-  }, [loadModel])
+  const speak = useCallback(async (text, voiceId = currentVoice, spd = speed) => {
+    if (!text?.trim() || !isReady || !workerRef.current) return false
+    setIsLoading(true)
+    const clean = text.replace(/```[\s\S]*?```/g, 'bloco de codigo').replace(/`[^`]+`/g, '').replace(/https?:\/\/\S+/g, 'link').replace(/[#_*~\[\]]/g, '').replace(/\n+/g, ' ').trim().slice(0, 500)
+    if (!clean) { setIsLoading(false); return false }
+    try {
+      const tts = workerRef.current
+      const audio = await tts.generate(clean, { voice: voiceId, speed: spd })
+      if (!audioCtxRef.current) audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)()
+      const ctx = audioCtxRef.current
+      const buffer = ctx.createBuffer(1, audio.samples.length, audio.sample_rate)
+      buffer.getChannelData(0).set(audio.samples)
+      const source = ctx.createBufferSource()
+      source.buffer = buffer
+      source.connect(ctx.destination)
+      setIsLoading(false)
+      setIsSpeaking(true)
+      source.onended = () => setIsSpeaking(false)
+      source.start()
+      return true
+    } catch (err) {
+      console.error('[Kokoro] Speak error:', err)
+      setIsLoading(false)
+      return false
+    }
+  }, [isReady, currentVoice, speed])
 
-  const stop = useCallback(() => { if (audioRef.current) { audioRef.current.pause(); audioRef.current = null }; setIsSpeaking(false) }, [])
+  const previewVoice = useCallback(async (voiceId) => {
+    const sample = 'Ola, eu sou a voz ' + (KOKORO_VOICES.find(v => v.id === voiceId)?.name || voiceId) + '. Testando o sistema de voz Kokoro.'
+    return speak(sample, voiceId, 1.0)
+  }, [speak])
 
-  return { isSpeaking, isLoading, isReady, speak, stop, loadModel, voices: KOKORO_VOICES }
+  const stop = useCallback(() => {
+    if (audioCtxRef.current) {
+      audioCtxRef.current.close().catch(() => {})
+      audioCtxRef.current = null
+    }
+    setIsSpeaking(false)
+  }, [])
+
+  return { speak, stop, previewVoice, isSpeaking, isLoading, isReady, voices, currentVoice, setCurrentVoice, speed, setSpeed, speedOptions: SPEED_OPTIONS }
 }
