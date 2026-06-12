@@ -1,12 +1,60 @@
-import { useState } from 'react'
-const ICONS = { github_list_repos: 'REPO', github_read_file: 'FILE', github_commit_file: 'COMMIT', github_create_pr: 'PR', vercel_list_deploys: 'DEPLOY', vercel_diagnose: 'DIAG', supabase_read: 'DB', supabase_write: 'SAVE', oracle_read: 'MEM', oracle_write: 'MEM', web_search: 'WEB', scan_url: 'URL', get_weather: 'WTHR', get_distance: 'MAP', calculate: 'CALC', telegram_send: 'TG', memory_save: 'SAVE', memory_search: 'FIND', sandbox_check: 'CHECK', send_email_alert: 'MAIL' }
+import { GitBranch, Database, Search, Cloud, Terminal, Shield, Brain, Globe, FileCode, Zap } from 'lucide-react'
 
-export function ToolCallCard({ toolCall }) {
-  const [expanded, setExpanded] = useState(false)
+const TOOL_ICONS = {
+  gitOperator: GitBranch,
+  databaseOracle: Database,
+  vectorMemory: Brain,
+  webSearch: Search,
+  deployAnalyst: Cloud,
+  sandboxRunner: Terminal,
+  morpheusLogger: Shield,
+  telegramSend: Globe,
+  fileHandler: FileCode,
+  default: Zap,
+}
+
+const TOOL_LABELS = {
+  gitOperator: 'Git Operator',
+  databaseOracle: 'Database Oracle',
+  vectorMemory: 'Vector Memory',
+  webSearch: 'Web Search',
+  deployAnalyst: 'Deploy Analyst',
+  sandboxRunner: 'Sandbox Runner',
+  morpheusLogger: 'Logger',
+  telegramSend: 'Telegram',
+  fileHandler: 'File Handler',
+}
+
+export function ToolCallCard({ tool, status = 'pending', result, error, duration, collapsed = false }) {
+  const Icon = TOOL_ICONS[tool] || TOOL_ICONS.default
+  const label = TOOL_LABELS[tool] || tool || 'Tool'
+
+  const statusClass = `tool-card--${status}`
+  const statusDot = status === 'running' ? <span className="spinner" /> : status === 'done' ? <span className="deploy-status-dot deploy-status-dot--success" /> : status === 'failed' ? <span className="deploy-status-dot deploy-status-dot--failed" /> : <span className="deploy-status-dot" style={{ background: 'rgba(255,255,255,0.2)' }} />
+
   return (
-    <div className={'tool-card tool-card--' + (toolCall.status || 'running')} onClick={() => setExpanded(!expanded)}>
-      <div className="tool-card-header"><span className="text-xs opacity-60">[{ICONS[toolCall.name] || 'TOOL'}]</span><code className="tool-name">{toolCall.name}</code>{toolCall.status === 'running' ? <div className="ldrs-orbit" /> : toolCall.status === 'done' ? <span className="text-green-400">OK</span> : <span className="text-red-400">FAIL</span>}<span className="text-xs opacity-30 ml-auto">{expanded ? 'MENOS' : 'MAIS'}</span></div>
-      {expanded && <div className="tool-card-body">{toolCall.input && <div><span className="opacity-50">Input:</span><pre>{JSON.stringify(toolCall.input, null, 2)}</pre></div>}{toolCall.result && <div><span className="opacity-50">Resultado:</span><pre>{String(toolCall.result).slice(0, 500)}</pre></div>}</div>}
+    <div className={`tool-card ${statusClass}`}>
+      <div className="tool-card-header">
+        {statusDot}
+        <Icon size={14} opacity={0.6} />
+        <span style={{ flex: 1 }}>{label}</span>
+        {duration && <span className="tool-name">{duration}ms</span>}
+        {status === 'running' && <span className="tool-name">running...</span>}
+      </div>
+      {!collapsed && result && (
+        <div className="tool-card-body">
+          {typeof result === 'string' ? (
+            <pre>{result.length > 500 ? result.slice(0, 500) + '...' : result}</pre>
+          ) : (
+            <pre>{JSON.stringify(result, null, 2).slice(0, 500)}</pre>
+          )}
+        </div>
+      )}
+      {!collapsed && error && (
+        <div className="tool-card-body" style={{ color: '#ff4444' }}>
+          {error}
+        </div>
+      )}
     </div>
   )
 }
