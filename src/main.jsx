@@ -12,16 +12,14 @@ const queryClient = new QueryClient({
 })
 
 ReactDOM.createRoot(document.getElementById('root')).render(
-  <React.StrictMode>
-    <ErrorBoundary>
-      <BrowserRouter>
-        <QueryClientProvider client={queryClient}>
-          <App />
-          <Toaster position="bottom-right" toastOptions={{
-            style: { background: '#0a1520', color: '#00FFFF', border: '1px solid #0d2030', fontFamily: "'JetBrains Mono', monospace", fontSize: '0.75rem' }
-          }} />
-        </QueryClientProvider>
-      </BrowserRouter>
-    </ErrorBoundary>
-  </React.StrictMode>
+  <ErrorBoundary>
+    <BrowserRouter>
+      <QueryClientProvider client={queryClient}>
+        <App />
+        <Toaster position="bottom-right" toastOptions={{
+          style: { background: '#0a1520', color: '#00FFFF', border: '1px solid #0d2030', fontFamily: "'JetBrains Mono', monospace", fontSize: '0.75rem' }
+        }} />
+      </QueryClientProvider>
+    </BrowserRouter>
+  </ErrorBoundary>
 )

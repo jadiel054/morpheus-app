@@ -66,20 +66,23 @@ export function AuthProvider({ children }) {
     setAuthState('unauthenticated')
   }, [])
 
-  if (loading) {
-    return (
-      <div style={{ background: '#050a0f', minHeight: '100vh', display: 'flex',
-        alignItems: 'center', justifyContent: 'center' }}>
-        <div style={{ color: '#00FFFF', fontFamily: 'monospace', textAlign: 'center' }}>
-          <div className="ldrs-helix" style={{ margin: '0 auto 16px' }} />
-          <div>MORPHEUS INICIALIZANDO...</div>
-        </div>
-      </div>
-    )
-  }
-
   const value = { user, session, loading, authState, signIn, signInWithMagicLink, signOut }
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
+
+  return (
+    <AuthContext.Provider value={value}>
+      {loading ? (
+        <div style={{ background: '#050a0f', minHeight: '100vh', display: 'flex',
+          alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ color: '#00FFFF', fontFamily: 'monospace', textAlign: 'center' }}>
+            <div className="ldrs-helix" style={{ margin: '0 auto 16px' }} />
+            <div>MORPHEUS INICIALIZANDO...</div>
+          </div>
+        </div>
+      ) : (
+        children
+      )}
+    </AuthContext.Provider>
+  )
 }
 
 export function useAuth() {
