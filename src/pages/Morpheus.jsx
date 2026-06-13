@@ -11,6 +11,8 @@ import { LoginScreen } from '../components/morpheus/LoginScreen'
 import { CombatModeBar } from '../components/morpheus/CombatModeBar'
 import { BiometricGate } from '../components/morpheus/BiometricGate'
 import { NewDeviceChallenge } from '../components/morpheus/NewDeviceChallenge'
+import { WelcomeMessage } from '../components/morpheus/WelcomeMessage'
+import { ResetPasswordModal } from '../components/morpheus/ResetPasswordModal'
 import { generateId, truncate } from '../lib/utils'
 import { speak } from '../lib/ttsDispatcher'
 import { useKokoroTTS } from '../components/morpheus/useKokoroTTS'
@@ -51,6 +53,9 @@ export default function Morpheus() {
   const [showSplash, setShowSplash] = useState(true)
   const [isSpeaking, setIsSpeaking] = useState(false)
   const [deviceChallenge, setDeviceChallenge] = useState(null)
+  const [showResetPassword, setShowResetPassword] = useState(
+    () => localStorage.getItem('morpheus_password_recovery') === 'true'
+  )
 
   const [settings, setSettings] = useState(() => {
     try { return JSON.parse(localStorage.getItem('morpheus_settings')) || def() } catch { return def() }
@@ -203,23 +208,35 @@ export default function Morpheus() {
   if (showSplash) return <SplashScreen onStart={() => setShowSplash(false)} />
 
   return (
-    <div className="h-full flex flex-col bg-dark-bg relative">
+    <div className="morpheus-layout bg-dark-bg relative">
       <HudOverlay />
       <CombatModeBar active={combatMode} />
       <ProtocolHeader protocolId="NEBUCHADNEZZAR v1.0" onOpenSettings={() => setShowBiometric(true)} onOpenHistory={() => setShowHistory(true)} onOpenObservability={() => setShowObservability(true)} combatMode={combatMode} onSignOut={() => signOut()} />
       <ConversationTabs tabs={tabs} activeTabId={activeTabId} onSelect={setActiveTabId} onClose={closeTab} onCreate={createTab} />
       <DeployMonitor />
-      <div className="flex-1 overflow-y-auto">
-        {activeTab.messages.map((msg, i) => <MessageBubble key={i} message={msg} isSpeaking={isSpeaking} onSpeak={handleSpeak} onRegenerate={handleRegenerate} />)}
+      <div className="morpheus-messages">
+        {activeTab.messages.length === 0
+          ? <WelcomeMessage
+              userName={settings.user_name || 'Jadiel'}
+              onQuickCommand={(cmd) => handleSend(cmd)}
+            />
+          : activeTab.messages.map((msg, i) => <MessageBubble key={i} message={msg} isSpeaking={isSpeaking} onSpeak={handleSpeak} onRegenerate={handleRegenerate} />)
+        }
         <ThinkingStatus steps={thinkingSteps} isLoading={isLoading} />
         <div ref={messagesEndRef} />
       </div>
-      <ChatInput onSend={handleSend} isLoading={isLoading} isListening={false} onToggleMic={() => {}} isSpeaking={isSpeaking} isLiveVoice={voiceLive.isLive} onToggleLive={() => voiceLive.isLive ? voiceLive.stop() : voiceLive.start()} />
+      <div className="morpheus-input-bar">
+        <ChatInput onSend={handleSend} isLoading={isLoading} isListening={false} onToggleMic={() => {}} isSpeaking={isSpeaking} isLiveVoice={voiceLive.isLive} onToggleLive={() => voiceLive.isLive ? voiceLive.stop() : voiceLive.start()} />
+      </div>
       {showSettings && <SettingsPanel settings={settings} onUpdate={updateSettings} onClose={() => setShowSettings(false)} />}
       {showHistory && <ConversationHistory onClose={() => setShowHistory(false)} onLoad={() => setShowHistory(false)} />}
       {showObservability && <ObservabilityPanel onClose={() => setShowObservability(false)} />}
       {showBiometric && <BiometricGate onSuccess={() => { setShowBiometric(false); setShowSettings(true) }} onCancel={() => setShowBiometric(false)} />}
       {deviceChallenge && <NewDeviceChallenge deviceInfo={deviceChallenge} onTrust={() => { trustDevice(deviceChallenge.deviceId); setDeviceChallenge(null) }} onBlock={() => { window.location.href = '/SecurityBlock' }} />}
+      {showResetPassword && <ResetPasswordModal onClose={() => {
+        localStorage.removeItem('morpheus_password_recovery')
+        setShowResetPassword(false)
+      }} />}
     </div>
   )
 }

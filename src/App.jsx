@@ -1,7 +1,8 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider } from './lib/authContext'
 import { LoginGate } from './components/morpheus/LoginGate'
-import { UpdateBanner } from './components/morpheus/UpdateBanner'
+import { UpdateBanner } from './components/pwa/UpdateBanner'
+import { InstallPWA } from './components/pwa/InstallPWA'
 import Morpheus from './pages/Morpheus'
 import Home from './pages/Home'
 import SecurityBlock from './pages/SecurityBlock'
@@ -13,6 +14,7 @@ export default function App() {
   return (
     <AuthProvider>
       <UpdateBanner />
+      <InstallPWA />
       <Routes>
         <Route path="/" element={<LoginGate><Morpheus /></LoginGate>} />
         <Route path="/Morpheus" element={<LoginGate><Morpheus /></LoginGate>} />

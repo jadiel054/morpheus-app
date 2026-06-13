@@ -2,7 +2,80 @@
 @tailwind components;
 @tailwind utilities;
 
-:root { --cyan: #00FFFF; --electric-blue: #0080FF; --dark-bg: #050a0f; --dark-card: #0a1520; --dark-border: #0d2030; --teal-dark: #003344; }
+/* ===== CSS Variables — Mobile First ===== */
+:root {
+  --cyan: #00FFFF;
+  --electric-blue: #0080FF;
+  --dark-bg: #050a0f;
+  --dark-card: #0a1520;
+  --dark-border: #0d2030;
+  --teal-dark: #003344;
+
+  --sidebar-width: 0px;
+  --chat-max-width: 100%;
+  --header-height: 60px;
+  --input-height: 80px;
+  --font-size-base: 14px;
+  --bubble-padding: 12px 16px;
+}
+
+/* Tablet (768px+) */
+@media (min-width: 768px) {
+  :root {
+    --chat-max-width: 720px;
+    --font-size-base: 15px;
+  }
+}
+
+/* Desktop (1024px+) */
+@media (min-width: 1024px) {
+  :root {
+    --sidebar-width: 280px;
+    --chat-max-width: 800px;
+    --font-size-base: 15px;
+  }
+
+  .conversation-sidebar {
+    display: flex !important;
+    width: var(--sidebar-width);
+    border-right: 1px solid #0d2030;
+  }
+
+  .protocol-header {
+    height: 50px;
+  }
+}
+
+/* Mobile: touch targets maiores */
+@media (max-width: 767px) {
+  button { min-height: 44px; min-width: 44px; }
+  input, textarea { font-size: 16px !important; }
+  .message-bubble { font-size: 14px; }
+  .chat-tab { font-size: 12px; padding: 8px 12px; }
+}
+
+/* ===== Layout Fix: Input sempre visivel ===== */
+.morpheus-layout {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+.morpheus-messages {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.morpheus-input-bar {
+  flex-shrink: 0;
+  position: sticky;
+  bottom: 0;
+  background: #050a0f;
+  padding-bottom: env(safe-area-inset-bottom);
+  z-index: 50;
+}
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body, #root { height: 100%; width: 100%; min-height: 100vh; }

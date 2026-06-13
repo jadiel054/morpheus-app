@@ -10,6 +10,22 @@ export function LoginScreen({ onLoggedIn }) {
   const [error,    setError]    = useState('')
   const [success,  setSuccess]  = useState('')
 
+  const handleForgotPassword = async () => {
+    if (!email) { setError('Digite seu email primeiro'); return }
+    setLoading(true)
+    setError('')
+    try {
+      await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: `${window.location.origin}/reset-password`
+      })
+      setSuccess(`Email de recuperacao enviado para ${email}. Verifique sua caixa de entrada.`)
+    } catch (err) {
+      setError('Erro ao enviar email de recuperacao')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   const handleSubmit = async () => {
     setError('')
     setSuccess('')
@@ -317,6 +333,26 @@ export function LoginScreen({ onLoggedIn }) {
         >
           USAR MAGIC LINK
         </button>
+
+        {mode === 'login' && (
+          <button
+            onClick={handleForgotPassword}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: 'rgba(0,255,255,0.5)',
+              fontSize: '12px',
+              fontFamily: 'monospace',
+              cursor: 'pointer',
+              padding: '8px',
+              marginTop: '8px',
+              textDecoration: 'underline',
+              width: '100%',
+            }}
+          >
+            Esqueci minha senha
+          </button>
+        )}
       </div>
     </div>
   )

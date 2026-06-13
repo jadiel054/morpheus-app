@@ -27,8 +27,11 @@ export function AuthProvider({ children }) {
         }
       })
 
-      const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, s) => {
+      const { data: { subscription } } = supabase.auth.onAuthStateChange((event, s) => {
         if (cancelled) return
+        if (event === 'PASSWORD_RECOVERY') {
+          localStorage.setItem('morpheus_password_recovery', 'true')
+        }
         setSession(s)
         setUser(s?.user ?? null)
         setAuthState(s ? 'authenticated' : 'unauthenticated')
