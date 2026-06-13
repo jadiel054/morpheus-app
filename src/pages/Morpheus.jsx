@@ -20,7 +20,7 @@ import { useKokoroTTS } from '../components/morpheus/useKokoroTTS'
 import { useVoiceLive } from '../components/morpheus/useVoiceLive'
 import { routeToAgent } from '../components/morpheus/agents/agentRouter'
 import { buildAgentSystemPrompt } from '../components/morpheus/agents/agentPrompts'
-import { processAndSaveMemory, buildMemoryPrompt, loadUserMemory } from '../components/morpheus/agents/memoryEngine'
+import { processAndSaveMemory, buildMemoryPrompt, loadUserMemory, saveMemoryToSupabase } from '../components/morpheus/agents/memoryEngine'
 import { loadEvolutionProfile, buildStyleLayer, incrementMessageCount } from '../components/morpheus/agents/evolutionEngine'
 import { analyzeSentiment, selectArchetype, buildPersonalityLayer } from '../components/morpheus/agents/personalityEngine'
 import { kairos } from '../components/morpheus/agents/kairosEngine'
@@ -97,6 +97,34 @@ export default function Morpheus() {
       }
     }
   }, [authState, user])
+
+  // Carrega memoria do Supabase no inicio da sessao
+  useEffect(() => {
+    if (user) {
+      supabase
+        .from('user_settings')
+        .select('memory_facts, memory_summary, user_name, preferred_city')
+        .eq('id', user.id)
+        .single()
+        .then(({ data }) => {
+          if (data) {
+            if (data.memory_facts?.length) {
+              const mem = loadUserMemory(user.id)
+              const merged = { ...mem, facts: [...mem.facts, ...data.memory_facts].slice(-50) }
+              setMemory(merged)
+            }
+            if (data.user_name || data.preferred_city) {
+              setSettings(prev => ({
+                ...prev,
+                user_name: data.user_name || prev.user_name,
+                preferred_city: data.preferred_city || prev.preferred_city,
+              }))
+            }
+          }
+        })
+        .catch(() => {})
+    }
+  }, [user])
 
   const updateSettings = useCallback((patch) => {
     setSettings(prev => { const next = { ...prev, ...patch }; localStorage.setItem('morpheus_settings', JSON.stringify(next)); return next })
@@ -249,6 +277,8 @@ export default function Morpheus() {
     try {
       const updatedMemory = processAndSaveMemory(text, user?.id || 'local', memory)
       setMemory(updatedMemory)
+      // Salva no Supabase tambem
+      if (user) saveMemoryToSupabase(user.id, updatedMemory.facts, supabase)
       const memoryPrompt = buildMemoryPrompt(updatedMemory)
 
       const { updated: newEvo } = incrementMessageCount(user?.id || 'local', evolution)

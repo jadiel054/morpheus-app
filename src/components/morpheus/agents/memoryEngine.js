@@ -35,3 +35,15 @@ export function saveMemoryFacts(userId, newFacts, existing) {
 export function buildMemoryPrompt(mem) { return mem?.facts?.length ? mem.facts.map(f => '- ' + f.label).join('\n') : '' }
 
 export function processAndSaveMemory(msg, userId, existing) { const nf = extractFacts(msg); return nf.length ? saveMemoryFacts(userId, nf, existing) : existing }
+
+export async function saveMemoryToSupabase(userId, facts, supabase) {
+  if (!userId || !facts?.length) return
+  const summary = facts.slice(0, 5).map(f => f.value).join('. ')
+  await supabase.from('user_settings').upsert({
+    id: userId,
+    user_email: '',
+    memory_facts: facts,
+    memory_summary: summary,
+    updated_at: new Date().toISOString(),
+  }, { onConflict: 'id' })
+}

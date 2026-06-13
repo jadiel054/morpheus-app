@@ -3,9 +3,32 @@ import { twMerge } from 'tailwind-merge'
 
 export function cn(...inputs) { return twMerge(clsx(inputs)) }
 
-export function formatTimestamp(ts) {
-  if (!ts) return ''
-  return new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+export function timeAgo(timestamp) {
+  if (!timestamp) return ''
+  const diff = Date.now() - timestamp
+  const mins = Math.floor(diff / 60000)
+  if (mins < 1) return 'agora'
+  if (mins < 60) return `${mins}min`
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return `${hours}h`
+  if (hours < 48) return 'ontem'
+  return new Date(timestamp).toLocaleDateString('pt-BR', {
+    day: '2-digit', month: '2-digit'
+  })
+}
+
+export function timeAgoFull(timestamp) {
+  if (!timestamp) return ''
+  const diff = Date.now() - timestamp
+  const mins = Math.floor(diff / 60000)
+  if (mins < 1) return 'agora'
+  if (mins < 60) return `${mins} min atras`
+  const date = new Date(timestamp)
+  const timeStr = date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return `hoje as ${timeStr}`
+  if (hours < 48) return `ontem as ${timeStr}`
+  return date.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }) + ` as ${timeStr}`
 }
 
 export function generateId() {

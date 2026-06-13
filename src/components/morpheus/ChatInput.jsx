@@ -6,6 +6,12 @@ export function ChatInput({ onSend, isLoading, isListening, onToggleMic, isSpeak
   const [text, setText] = useState('')
   const [attachments, setAttachments] = useState([])
   const [isDragOver, setIsDragOver] = useState(false)
+  const [voiceEnabled, setVoiceEnabled] = useState(
+    () => {
+      try { return JSON.parse(localStorage.getItem('morpheus_settings') || '{}').voice_enabled !== false }
+      catch { return true }
+    }
+  )
   const fileInputRef = useRef(null)
 
   const handleSubmit = (e) => {
@@ -80,6 +86,15 @@ export function ChatInput({ onSend, isLoading, isListening, onToggleMic, isSpeak
       setAttachments(prev => [...prev, att])
     }
   }, [])
+
+  const toggleVoice = () => {
+    const newVal = !voiceEnabled
+    setVoiceEnabled(newVal)
+    const settings = JSON.parse(localStorage.getItem('morpheus_settings') || '{}')
+    settings.voice_enabled = newVal
+    localStorage.setItem('morpheus_settings', JSON.stringify(settings))
+    if (!newVal) window.speechSynthesis?.cancel()
+  }
 
   const removeAttachment = (id) => {
     setAttachments(prev => prev.filter(a => a.id !== id))
@@ -159,6 +174,24 @@ export function ChatInput({ onSend, isLoading, isListening, onToggleMic, isSpeak
           title={isListening ? 'Microfone ativo' : 'Ativar microfone'}
         >
           {isListening ? <MicOff size={16} /> : <Mic size={16} />}
+        </button>
+
+        <button
+          type="button"
+          onClick={toggleVoice}
+          title={voiceEnabled ? 'Desativar voz' : 'Ativar voz'}
+          style={{
+            background: 'transparent',
+            border: '1px solid rgba(0,255,255,0.2)',
+            borderRadius: '8px',
+            padding: '6px 8px',
+            color: voiceEnabled ? '#00FFFF' : 'rgba(0,255,255,0.2)',
+            cursor: 'pointer',
+            fontSize: '14px',
+            transition: 'all 0.2s',
+          }}
+        >
+          {voiceEnabled ? 'ON' : 'OFF'}
         </button>
 
         <button

@@ -3,6 +3,7 @@ import { X } from 'lucide-react'
 import { useAuth } from '../../lib/authContext'
 import { supabase } from '../../lib/supabaseClient'
 import { useKokoroTTS } from './useKokoroTTS'
+import { KokoroDownloadManager } from './KokoroDownloadManager'
 const TABS = ['Perfil', 'Voz', 'IA', 'Integracoes', 'Seguranca']
 
 export function SettingsPanel({ settings, onUpdate, onClose }) {
@@ -113,6 +114,10 @@ export function SettingsPanel({ settings, onUpdate, onClose }) {
             <div><label className="text-xs opacity-60">Idioma</label><select className="w-full bg-dark-bg border border-dark-border rounded px-3 py-2 text-sm text-cyan mt-1 font-mono" value={localSettings.language || 'pt-BR'} onChange={e => updateLocal({ language: e.target.value })}><option value="pt-BR">Portugues (BR)</option><option value="en-US">English (US)</option></select></div>
           </div>}
           {activeTab === 'Voz' && <div className="space-y-4">
+            <KokoroDownloadManager
+              onDownloadComplete={() => {}}
+              onSkip={() => {}}
+            />
             <div><label className="text-xs opacity-60">Motor TTS</label><select className="w-full bg-dark-bg border border-dark-border rounded px-3 py-2 text-sm text-cyan mt-1 font-mono" value={localSettings.tts_engine || 'auto'} onChange={e => updateLocal({ tts_engine: e.target.value })}>
               <option value="auto">Auto (Kokoro + fallback Web Speech)</option>
               <option value="kokoro">Kokoro (Local/Gratuito)</option>

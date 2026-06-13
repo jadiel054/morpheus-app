@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { X } from 'lucide-react'
 import { useAuth } from '../../lib/authContext'
 import { supabase } from '../../lib/supabaseClient'
+import { timeAgoFull } from '../../lib/utils'
 
 export function ConversationHistory({ onClose, onLoad }) {
   const { user } = useAuth()
@@ -81,7 +82,7 @@ export function ConversationHistory({ onClose, onLoad }) {
                   {conv.title}
                 </div>
                 <div style={{ color: 'rgba(0,255,255,0.4)', fontSize: '11px', fontFamily: 'monospace' }}>
-                  {conv.last_message_at ? new Date(conv.last_message_at).toLocaleDateString('pt-BR') : ''}
+                  {conv.last_message_at ? timeAgoFull(conv.last_message_at) : ''}
                   {' · '}{conv.messages?.length || 0} msgs
                 </div>
               </div>

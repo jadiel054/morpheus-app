@@ -1,56 +1,126 @@
 import { useState } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { Volume2, VolumeX, RefreshCw, ThumbsUp, ThumbsDown } from 'lucide-react'
-import { formatTimestamp } from '../../lib/utils'
+import { timeAgo } from '../../lib/utils'
 
-export function MessageBubble({ message, isSpeaking, onSpeak, onStop, onRegenerate, onFeedback }) {
+export function MessageBubble({ message, isSpeaking, onSpeak, onStop, onRegenerate }) {
   const isUser = message.role === 'user'
-  const [showActions, setShowActions] = useState(false)
-  const [playing, setPlaying] = useState(false)
+  const [copied, setCopied] = useState(false)
 
-  const handleSpeak = async () => {
-    if (playing && onStop) {
+  const handleCopy = () => {
+    navigator.clipboard.writeText(message.content)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1000)
+  }
+
+  const handleSpeak = () => {
+    if (isSpeaking && onStop) {
       onStop()
-      setPlaying(false)
       return
     }
-    setPlaying(true)
-    try {
-      await onSpeak?.(message.content)
-    } finally {
-      setPlaying(false)
-    }
+    onSpeak?.(message.content)
   }
 
   return (
-    <div className={'px-4 py-3 ' + (isUser ? '' : 'bg-dark-card/50')} onMouseEnter={() => setShowActions(true)} onMouseLeave={() => setShowActions(false)}>
-      <div className="flex items-center gap-2 mb-1">
-        <span className={'text-xs font-bold ' + (isUser ? 'text-electric-blue' : 'text-cyan')}>{isUser ? 'JADIEL' : 'MORPHEUS'}</span>
-        {message.timestamp && <span className="text-xs opacity-30">{formatTimestamp(message.timestamp)}</span>}
-        {message.model && <span className="model-badge">{message.model}</span>}
+    <div style={{
+      padding: '12px 16px',
+      background: isUser ? 'transparent' : 'rgba(0,255,255,0.02)',
+      borderBottom: '1px solid rgba(0,255,255,0.04)',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+        <span style={{
+          fontSize: '11px', fontWeight: '700', fontFamily: 'monospace',
+          color: isUser ? '#7B61FF' : '#00FFFF',
+          letterSpacing: '1px',
+        }}>
+          {isUser ? 'JADIEL' : 'MORPHEUS'}
+        </span>
+        {message.timestamp && (
+          <span style={{ fontSize: '10px', color: 'rgba(0,255,255,0.3)', fontFamily: 'monospace' }}>
+            {timeAgo(message.timestamp)}
+          </span>
+        )}
       </div>
 
-      {!isUser && (playing || isSpeaking) && (
-        <div className="flex items-center gap-2 mb-2">
+      {!isUser && isSpeaking && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
           <div className="ldrs-waveform" />
-          <span className="text-xs opacity-50">Reproduzindo...</span>
+          <span style={{ fontSize: '11px', color: 'rgba(0,255,255,0.5)', fontFamily: 'monospace' }}>
+            Reproduzindo...
+          </span>
         </div>
       )}
 
-      <div className="text-sm leading-relaxed opacity-90 prose prose-invert prose-sm max-w-none">
+      <div style={{ fontSize: '14px', lineHeight: 1.6, color: 'rgba(0,255,255,0.85)' }}>
         {isUser ? <p>{message.content}</p> : <ReactMarkdown>{message.content || ''}</ReactMarkdown>}
       </div>
-      {message.files?.length > 0 && <div className="flex gap-2 mt-2">{message.files.map((f, i) => <div key={i} className="text-xs opacity-50 border border-dark-border rounded px-2 py-1">{f.name || 'Arquivo'}</div>)}</div>}
-      {!isUser && (showActions || playing) && (
-        <div className="flex items-center gap-1 mt-2 opacity-40 hover:opacity-100 transition-opacity">
-          <button onClick={handleSpeak} className={'p-1 ' + (playing || isSpeaking ? 'text-cyan' : '')} title={playing ? 'Parar' : 'Ouvir'}>
-            {playing || isSpeaking ? <VolumeX size={12} /> : <Volume2 size={12} />}
-          </button>
-          <button onClick={() => onRegenerate?.()} className="p-1" title="Regenerar"><RefreshCw size={12} /></button>
-          <button onClick={() => onFeedback?.('like')} className="p-1" title="Gostei"><ThumbsUp size={12} /></button>
-          <button onClick={() => onFeedback?.('dislike')} className="p-1" title="Nao gostei"><ThumbsDown size={12} /></button>
+
+      {message.files?.length > 0 && (
+        <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+          {message.files.map((f, i) => (
+            <div key={i} style={{
+              fontSize: '11px', color: 'rgba(0,255,255,0.4)',
+              border: '1px solid rgba(0,255,255,0.1)', borderRadius: '6px',
+              padding: '4px 8px', fontFamily: 'monospace',
+            }}>
+              {f.name || 'Arquivo'}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Barra de acoes — apenas para mensagens do MORPHEUS */}
+      {!isUser && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: '6px',
+          marginTop: '10px', paddingTop: '8px',
+          borderTop: '1px solid rgba(0,255,255,0.06)',
+        }}>
+          <ActionButton
+            icon={copied ? 'Copiado' : 'Copiar'}
+            active={copied}
+            onClick={handleCopy}
+          />
+          <ActionButton
+            icon={isSpeaking ? 'Parar' : 'Ouvir'}
+            active={isSpeaking}
+            onClick={handleSpeak}
+          />
+          <ActionButton
+            icon="Regenerar"
+            onClick={() => onRegenerate?.()}
+          />
+          <span style={{
+            marginLeft: 'auto', fontSize: '10px',
+            color: 'rgba(0,255,255,0.25)', fontFamily: 'monospace',
+          }}>
+            {message.model || 'groq/llama-3.3-70b'}
+          </span>
+          <span style={{
+            fontSize: '10px', color: 'rgba(0,255,255,0.25)', fontFamily: 'monospace',
+          }}>
+            {timeAgo(message.timestamp)}
+          </span>
         </div>
       )}
     </div>
+  )
+}
+
+function ActionButton({ icon, onClick, active }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        background: active ? 'rgba(0,255,255,0.15)' : 'transparent',
+        border: '1px solid rgba(0,255,255,0.1)',
+        borderRadius: '6px', padding: '4px 8px',
+        color: '#00FFFF', cursor: 'pointer',
+        fontSize: '11px', fontFamily: 'monospace',
+        transition: 'all 0.2s',
+        minWidth: '32px', minHeight: '28px',
+      }}
+    >
+      {icon}
+    </button>
   )
 }
