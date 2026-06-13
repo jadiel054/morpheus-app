@@ -13,6 +13,7 @@ import { BiometricGate } from '../components/morpheus/BiometricGate'
 import { NewDeviceChallenge } from '../components/morpheus/NewDeviceChallenge'
 import { WelcomeMessage } from '../components/morpheus/WelcomeMessage'
 import { ResetPasswordModal } from '../components/morpheus/ResetPasswordModal'
+import { supabase } from '../lib/supabaseClient'
 import { generateId, truncate } from '../lib/utils'
 import { speak } from '../lib/ttsDispatcher'
 import { useKokoroTTS } from '../components/morpheus/useKokoroTTS'
@@ -105,32 +106,131 @@ export default function Morpheus() {
   const completeLastStep = useCallback((result) => setThinkingSteps(prev => { const n = [...prev]; if (n.length) n[n.length-1] = { ...n[n.length-1], status: 'done', result }; return n }), [])
   const clearSteps = useCallback(() => setTimeout(() => setThinkingSteps([]), 2000), [])
 
+  const saveConversation = useCallback(async (tab) => {
+    if (!user || tab.messages.length === 0) return
+    try {
+      const title = tab.title || tab.messages[0]?.content?.slice(0, 40) || 'Nova Conversa'
+      await supabase.from('conversations').upsert({
+        id: tab.id,
+        user_id: user.id,
+        title,
+        messages: tab.messages,
+        last_message_at: Date.now(),
+        updated_at: new Date().toISOString(),
+      })
+    } catch (err) {
+      console.error('[saveConversation] Erro:', err)
+    }
+  }, [user])
+
+  const loadConversations = useCallback(async () => {
+    if (!user) return []
+    try {
+      const { data } = await supabase
+        .from('conversations')
+        .select('id, title, last_message_at, messages')
+        .eq('user_id', user.id)
+        .order('last_message_at', { ascending: false })
+        .limit(50)
+      return data || []
+    } catch (err) {
+      console.error('[loadConversations] Erro:', err)
+      return []
+    }
+  }, [user])
+
   const createTab = useCallback(() => { const t = { id: 'tab-' + Date.now(), title: 'Nova Conversa', messages: [] }; setTabs(prev => [...prev, t]); setActiveTabId(t.id) }, [])
   const closeTab = useCallback((id) => setTabs(prev => { if (prev.length <= 1) return prev; const n = prev.filter(t => t.id !== id); if (activeTabId === id) setActiveTabId(n[n.length-1].id); return n }), [activeTabId])
   const updateActiveTab = useCallback((updater) => setTabs(prev => prev.map(t => t.id === activeTabId ? updater(t) : t)), [activeTabId])
 
   const callAI = useCallback(async (systemPrompt, userText, history = []) => {
-    const apiUrl = import.meta.env.VITE_API_URL || ''
-    if (apiUrl) {
-      try {
-        const res = await fetch(apiUrl + '/api/chat', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + (user?.access_token || '') },
-          body: JSON.stringify({ messages: [{ role: 'system', content: systemPrompt }, ...history, { role: 'user', content: userText }], apiKeys: { groq: settings.groq_api_key }, model: settings.ai_model || 'auto' })
-        })
-        if (res.ok) { const d = await res.json(); return { content: d.content, model: d.model || 'groq/llama-3.3-70b' } }
-      } catch {}
-    }
-    if (settings.groq_api_key) {
+    // Sempre lê do localStorage — garante keys mais recentes
+    const stored = (() => { try { return JSON.parse(localStorage.getItem('morpheus_settings') || '{}') } catch { return {} } })()
+    const integrations = (() => { try { return JSON.parse(localStorage.getItem('morpheus_integrations') || '{}') } catch { return {} } })()
+
+    const groqKey       = integrations.groq_key       || stored.groq_api_key       || ''
+    const openrouterKey = integrations.openrouter_key  || stored.openrouter_api_key  || ''
+    const claudeKey     = integrations.claude_key      || stored.claude_api_key     || ''
+    const openaiKey     = integrations.openai_key      || stored.openai_api_key     || ''
+    const deepseekKey   = integrations.deepseek_key    || stored.deepseek_api_key   || ''
+    const geminiKey     = integrations.gemini_key      || stored.gemini_api_key     || ''
+
+    const isValidKey = (k) => k && k.length > 10 && k !== 'sk-...'
+
+    // Tentativa 1: Groq (primário)
+    if (isValidKey(groqKey)) {
       try {
         const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + settings.groq_api_key },
-          body: JSON.stringify({ model: 'llama-3.3-70b-versatile', messages: [{ role: 'system', content: systemPrompt }, ...history, { role: 'user', content: userText }], max_tokens: 4096, temperature: 0.7 })
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${groqKey}` },
+          body: JSON.stringify({ model: 'llama-3.3-70b-versatile', messages: [{ role: 'system', content: systemPrompt }, ...history.slice(-10), { role: 'user', content: userText }], max_tokens: 2048, temperature: 0.7 })
         })
-        if (res.ok) { const d = await res.json(); return { content: d.choices?.[0]?.message?.content || '', model: 'groq/llama-3.3-70b' } }
-      } catch {}
+        if (res.ok) { const d = await res.json(); return { content: d.choices?.[0]?.message?.content || 'Sem resposta', model: 'groq/llama-3.3-70b' } }
+      } catch (e) { console.warn('[callAI] Groq falhou:', e) }
     }
-    return { content: '[MORPHEUS] Nenhum LLM disponivel. Configure uma API key nas Configuracoes.', model: 'none' }
-  }, [settings, user])
+
+    // Tentativa 2: Claude (Anthropic)
+    if (isValidKey(claudeKey)) {
+      try {
+        const res = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-api-key': claudeKey, 'anthropic-version': '2023-06-01' },
+          body: JSON.stringify({ model: 'claude-3-5-sonnet-20241022', max_tokens: 2048, system: systemPrompt, messages: [...history.slice(-10), { role: 'user', content: userText }] })
+        })
+        if (res.ok) { const d = await res.json(); return { content: d.content?.[0]?.text || 'Sem resposta', model: 'claude-3.5-sonnet' } }
+      } catch (e) { console.warn('[callAI] Claude falhou:', e) }
+    }
+
+    // Tentativa 3: OpenAI
+    if (isValidKey(openaiKey)) {
+      try {
+        const res = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${openaiKey}` },
+          body: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'system', content: systemPrompt }, ...history.slice(-10), { role: 'user', content: userText }], max_tokens: 2048 })
+        })
+        if (res.ok) { const d = await res.json(); return { content: d.choices?.[0]?.message?.content || 'Sem resposta', model: 'openai/gpt-4o-mini' } }
+      } catch (e) { console.warn('[callAI] OpenAI falhou:', e) }
+    }
+
+    // Tentativa 4: OpenRouter
+    if (isValidKey(openrouterKey)) {
+      try {
+        const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${openrouterKey}`, 'HTTP-Referer': window.location.origin },
+          body: JSON.stringify({ model: 'meta-llama/llama-3.3-70b-instruct', messages: [{ role: 'system', content: systemPrompt }, ...history.slice(-10), { role: 'user', content: userText }], max_tokens: 2048 })
+        })
+        if (res.ok) { const d = await res.json(); return { content: d.choices?.[0]?.message?.content || 'Sem resposta', model: 'openrouter/llama-3.3-70b' } }
+      } catch (e) { console.warn('[callAI] OpenRouter falhou:', e) }
+    }
+
+    // Tentativa 5: DeepSeek
+    if (isValidKey(deepseekKey)) {
+      try {
+        const res = await fetch('https://api.deepseek.com/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${deepseekKey}` },
+          body: JSON.stringify({ model: 'deepseek-chat', messages: [{ role: 'system', content: systemPrompt }, ...history.slice(-10), { role: 'user', content: userText }], max_tokens: 2048 })
+        })
+        if (res.ok) { const d = await res.json(); return { content: d.choices?.[0]?.message?.content || 'Sem resposta', model: 'deepseek/deepseek-chat' } }
+      } catch (e) { console.warn('[callAI] DeepSeek falhou:', e) }
+    }
+
+    // Tentativa 6: Gemini
+    if (isValidKey(geminiKey)) {
+      try {
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ system_instruction: { parts: [{ text: systemPrompt }] }, contents: [{ role: 'user', parts: [{ text: userText }] }] })
+        })
+        if (res.ok) { const d = await res.json(); return { content: d.candidates?.[0]?.content?.parts?.[0]?.text || 'Sem resposta', model: 'gemini/2.0-flash' } }
+      } catch (e) { console.warn('[callAI] Gemini falhou:', e) }
+    }
+
+    return { content: '[MORPHEUS] Nenhum LLM configurado. Va em Configuracoes > Integracoes e adicione sua GROQ API Key (gratuita em console.groq.com).', model: 'none' }
+  }, [])
 
   const handleSend = useCallback(async (text, files = [], fromVoice = false) => {
     kairos.recordUserAction()
@@ -180,7 +280,12 @@ export default function Morpheus() {
       completeLastStep('Modelo: ' + (result.model || 'unknown'))
 
       const assistantMsg = { role: 'assistant', content: result.content, timestamp: Date.now(), model: result.model }
-      updateActiveTab(tab => ({ ...tab, messages: [...tab.messages, assistantMsg] }))
+      updateActiveTab(tab => {
+        const updated = { ...tab, messages: [...tab.messages, assistantMsg] }
+        // Salva no Supabase apos cada resposta
+        saveConversation(updated)
+        return updated
+      })
 
       if (!fromVoice && settings.tts_engine !== 'disabled') {
         setIsSpeaking(true)
@@ -193,7 +298,7 @@ export default function Morpheus() {
       setIsLoading(false)
       clearSteps()
     }
-  }, [activeTab, user, memory, evolution, settings, combatMode, kokoro, callAI, addStep, completeLastStep, clearSteps, updateActiveTab])
+  }, [activeTab, user, memory, evolution, settings, combatMode, kokoro, callAI, addStep, completeLastStep, clearSteps, updateActiveTab, saveConversation])
 
   const handleSpeak = useCallback(async (text) => { setIsSpeaking(true); try { await speak(text, settings, kokoro) } finally { setIsSpeaking(false) } }, [settings, kokoro])
 

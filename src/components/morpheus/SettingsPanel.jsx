@@ -2,12 +2,15 @@ import { useState } from 'react'
 import { X } from 'lucide-react'
 import { useAuth } from '../../lib/authContext'
 import { supabase } from '../../lib/supabaseClient'
+import { useKokoroTTS } from './useKokoroTTS'
 const TABS = ['Perfil', 'Voz', 'IA', 'Integracoes', 'Seguranca']
 
 export function SettingsPanel({ settings, onUpdate, onClose }) {
   const { user } = useAuth()
+  const kokoroHook = useKokoroTTS()
   const [activeTab, setActiveTab] = useState('Perfil')
   const [saved, setSaved] = useState(false)
+  const [testingVoice, setTestingVoice] = useState(false)
   const [localSettings, setLocalSettings] = useState({ ...settings })
   const [integrations, setIntegrations] = useState(() => {
     try { return JSON.parse(localStorage.getItem('morpheus_integrations') || '{}') } catch { return {} }
@@ -35,6 +38,25 @@ export function SettingsPanel({ settings, onUpdate, onClose }) {
     }
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
+  }
+
+  const handleTestVoice = async () => {
+    setTestingVoice(true)
+    try {
+      await kokoroHook.speak(
+        'Ola Jadiel. MORPHEUS online. Sistemas operacionais.',
+        localSettings.kokoro_voice || 'af_nicole',
+        localSettings.voice_speed || 1.0
+      )
+    } catch (err) {
+      if (typeof window !== 'undefined' && window.speechSynthesis) {
+        const utt = new SpeechSynthesisUtterance('Ola Jadiel. MORPHEUS online.')
+        utt.lang = 'pt-BR'
+        window.speechSynthesis.speak(utt)
+      }
+    } finally {
+      setTestingVoice(false)
+    }
   }
 
   const testApiKey = async (provider, key) => {
@@ -113,6 +135,18 @@ export function SettingsPanel({ settings, onUpdate, onClose }) {
             {localSettings.tts_engine === 'elevenlabs' && <div><label className="text-xs opacity-60">ElevenLabs API Key</label><input type="password" className="w-full bg-dark-bg border border-dark-border rounded px-3 py-2 text-sm text-cyan mt-1 font-mono" value={localSettings.elevenlabs_api_key || ''} onChange={e => updateLocal({ elevenlabs_api_key: e.target.value })} placeholder="sk-..." /></div>}
             {localSettings.tts_engine === 'elevenlabs' && <div><label className="text-xs opacity-60">ElevenLabs Voice ID</label><input className="w-full bg-dark-bg border border-dark-border rounded px-3 py-2 text-sm text-cyan mt-1 font-mono" value={localSettings.elevenlabs_voice_id || ''} onChange={e => updateLocal({ elevenlabs_voice_id: e.target.value })} placeholder="Rachel" /></div>}
             <div><label className="text-xs opacity-60">Velocidade da Voz</label><input type="range" min="0.5" max="2" step="0.1" className="w-full mt-1" value={localSettings.voice_speed || 1.0} onChange={e => updateLocal({ voice_speed: parseFloat(e.target.value) })} /><span className="text-xs opacity-40">{localSettings.voice_speed || 1.0}x</span></div>
+            <div style={{ marginTop: '16px' }}>
+              <button onClick={handleTestVoice} disabled={testingVoice} style={{
+                width: '100%', padding: '12px',
+                background: testingVoice ? 'rgba(0,255,255,0.15)' : 'transparent',
+                border: '1px solid rgba(0,255,255,0.3)', borderRadius: '8px',
+                color: '#00FFFF', fontFamily: 'monospace', fontSize: '13px',
+                cursor: testingVoice ? 'not-allowed' : 'pointer',
+                letterSpacing: '1px',
+              }}>
+                {testingVoice ? 'TOCANDO...' : 'TESTAR VOZ'}
+              </button>
+            </div>
           </div>}
           {activeTab === 'IA' && <div className="space-y-4">
             <div><label className="text-xs opacity-60">Modelo AI</label><select className="w-full bg-dark-bg border border-dark-border rounded px-3 py-2 text-sm text-cyan mt-1 font-mono" value={localSettings.ai_model || 'auto'} onChange={e => updateLocal({ ai_model: e.target.value })}><option value="auto">Auto (Groq primario)</option><option value="groq_llama">Groq Llama 3.3 70B</option><option value="groq_mixtral">Groq Mixtral 8x7B</option><option value="openrouter_qwen_coder">OpenRouter Qwen Coder</option><option value="openai_gpt4o">OpenAI GPT-4o</option><option value="claude">Claude 3.5 Sonnet</option></select></div>
@@ -144,7 +178,6 @@ export function SettingsPanel({ settings, onUpdate, onClose }) {
           {activeTab === 'Seguranca' && <div className="space-y-4"><div><label className="text-xs opacity-60">PIN de Emergencia (6 digitos)</label><input type="password" maxLength={6} className="w-full bg-dark-bg border border-dark-border rounded px-3 py-2 text-sm text-cyan mt-1 font-mono tracking-widest" defaultValue="123456" onChange={e => localStorage.setItem('morpheus_emergency_pin', e.target.value)} /></div><p className="text-xs opacity-40">WebAuthn / Biometria: configure no dispositivo.</p></div>}
         </div>
 
-        {/* Rodape fixo com SALVAR e FECHAR */}
         <div style={{
           borderTop: '1px solid #0d2030',
           padding: '16px 24px',

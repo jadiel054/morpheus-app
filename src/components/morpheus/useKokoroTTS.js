@@ -1,8 +1,7 @@
 import { useRef, useState, useCallback } from 'react'
 
-// Kokoro é carregado via CDN em runtime — NUNCA bundlado pelo Vite
-// Isso evita OOM no esbuild e mantém o bundle leve
-const KOKORO_CDN = 'https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/dist/kokoro.min.js'
+// Kokoro via dynamic ESM import do CDN — compatível com browser moderno
+const KOKORO_CDN_ESM = 'https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/+esm'
 
 export const KOKORO_VOICES = [
   { id: 'af_nicole',  name: 'Nicole',  gender: 'F', style: 'natural' },
@@ -14,43 +13,25 @@ export const KOKORO_VOICES = [
   { id: 'am_adam',    name: 'Adam',    gender: 'M', style: 'cinematic' },
 ]
 
-// Cache global do módulo carregado (persiste entre renders)
-let kokoroModuleCache = null
 let kokoroInstanceCache = null
 
 async function loadKokoroFromCDN() {
-  // Já carregado anteriormente
   if (kokoroInstanceCache) return kokoroInstanceCache
 
-  // Carrega o script via CDN dinamicamente se ainda não estiver na página
-  if (!kokoroModuleCache) {
-    await new Promise((resolve, reject) => {
-      // Verifica se já foi injetado
-      if (document.querySelector(`script[data-kokoro]`)) {
-        resolve()
-        return
-      }
-      const script = document.createElement('script')
-      script.src = KOKORO_CDN
-      script.setAttribute('data-kokoro', 'true')
-      script.onload = resolve
-      script.onerror = () => reject(new Error('Falha ao carregar Kokoro via CDN'))
-      document.head.appendChild(script)
-    })
-    kokoroModuleCache = window.KokoroTTS || window.kokoro
-  }
+  try {
+    const kokoroModule = await import(/* @vite-ignore */ KOKORO_CDN_ESM)
+    const KokoroTTS = kokoroModule.KokoroTTS || kokoroModule.default?.KokoroTTS
+    if (!KokoroTTS) throw new Error('KokoroTTS nao encontrado no modulo CDN')
 
-  if (!kokoroModuleCache) {
-    throw new Error('Kokoro não encontrado após carregamento do CDN')
+    kokoroInstanceCache = await KokoroTTS.from_pretrained(
+      'onnx-community/Kokoro-82M-ONNX',
+      { dtype: 'q8', device: 'wasm' }
+    )
+    return kokoroInstanceCache
+  } catch (err) {
+    console.error('[Kokoro] Falha ao carregar:', err)
+    throw err
   }
-
-  // Instancia o modelo ONNX (q8 = quantizado, mais leve)
-  const KokoroTTS = kokoroModuleCache.KokoroTTS || kokoroModuleCache
-  kokoroInstanceCache = await KokoroTTS.from_pretrained(
-    'onnx-community/Kokoro-82M-ONNX',
-    { dtype: 'q8', device: 'wasm' }
-  )
-  return kokoroInstanceCache
 }
 
 export function useKokoroTTS() {
@@ -59,17 +40,10 @@ export function useKokoroTTS() {
   const [isReady,    setIsReady]    = useState(false)
   const [error,      setError]      = useState(null)
   const audioRef = useRef(null)
-  const currentVoiceRef = useRef('af_nicole')
 
-  const speak = useCallback(async (
-    text,
-    voice = 'af_nicole',
-    speed = 1.0,
-    onDone
-  ) => {
+  const speak = useCallback(async (text, voice = 'af_nicole', speed = 1.0) => {
     stop()
     setError(null)
-    currentVoiceRef.current = voice
 
     try {
       setIsLoading(true)
@@ -80,14 +54,12 @@ export function useKokoroTTS() {
 
       const audio = await tts.generate(text, { voice, speed })
 
-      // Kokoro retorna AudioBuffer ou Blob dependendo da versão
       let audioUrl
       if (audio instanceof Blob) {
         audioUrl = URL.createObjectURL(audio)
       } else if (audio?.blob) {
         audioUrl = URL.createObjectURL(audio.blob)
       } else {
-        // Fallback: tenta converter ArrayBuffer
         const blob = new Blob([audio], { type: 'audio/wav' })
         audioUrl = URL.createObjectURL(blob)
       }
@@ -95,25 +67,25 @@ export function useKokoroTTS() {
       const audioEl = new Audio(audioUrl)
       audioRef.current = audioEl
 
-      audioEl.onended = () => {
-        setIsSpeaking(false)
-        URL.revokeObjectURL(audioUrl)
-        onDone?.()
-      }
-
-      audioEl.onerror = () => {
-        setIsSpeaking(false)
-        URL.revokeObjectURL(audioUrl)
-        setError('Erro ao reproduzir áudio Kokoro')
-      }
-
-      await audioEl.play()
+      return new Promise((resolve, reject) => {
+        audioEl.onended = () => {
+          setIsSpeaking(false)
+          URL.revokeObjectURL(audioUrl)
+          resolve()
+        }
+        audioEl.onerror = () => {
+          setIsSpeaking(false)
+          URL.revokeObjectURL(audioUrl)
+          setError('Erro ao reproduzir audio Kokoro')
+          reject(new Error('Audio playback failed'))
+        }
+        audioEl.play().catch(reject)
+      })
     } catch (err) {
       console.error('[Kokoro] Erro:', err)
       setError(err.message)
       setIsLoading(false)
       setIsSpeaking(false)
-      // Não relança — deixa o ttsDispatcher fazer fallback para WebSpeech
       throw err
     }
   }, [])
@@ -128,7 +100,6 @@ export function useKokoroTTS() {
   }, [])
 
   const preload = useCallback(async () => {
-    // Pré-carrega o modelo em background (chamado na splash screen)
     if (isReady || isLoading) return
     try {
       setIsLoading(true)
@@ -150,6 +121,5 @@ export function useKokoroTTS() {
     stop,
     preload,
     voices: KOKORO_VOICES,
-    currentVoice: currentVoiceRef.current,
   }
 }
