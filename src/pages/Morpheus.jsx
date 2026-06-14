@@ -470,7 +470,12 @@ export default function Morpheus() {
       <div className="morpheus-input-bar">
         <ChatInput onSend={handleSend} isLoading={isLoading} isListening={false} onToggleMic={() => {}} isSpeaking={isSpeaking} isLiveVoice={voiceLive.isLive} onToggleLive={() => voiceLive.isLive ? voiceLive.stop() : voiceLive.start()} />
       </div>
-      {showSettings && <SettingsPanel settings={settings} onUpdate={updateSettings} onClose={() => setShowSettings(false)} />}
+      {showSettings && <SettingsPanel
+        settings={settings}
+        onUpdate={updateSettings}
+        onClose={() => setShowSettings(false)}
+        initialIntegrations={(() => { try { return JSON.parse(localStorage.getItem('morpheus_integrations') || '{}') } catch { return {} } })()}
+      />}
       {showHistory && <ConversationHistory onClose={() => setShowHistory(false)} onLoad={() => setShowHistory(false)} />}
       {showObservability && <ObservabilityPanel onClose={() => setShowObservability(false)} />}
       {showBiometric && <BiometricGate onSuccess={() => { setShowBiometric(false); setShowSettings(true) }} onCancel={() => setShowBiometric(false)} />}

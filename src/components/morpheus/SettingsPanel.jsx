@@ -1,10 +1,13 @@
-import { useState } from 'react'
+import { useState, createContext, useContext } from 'react'
 import { X } from 'lucide-react'
 import { useAuth } from '../../lib/authContext'
 import { supabase } from '../../lib/supabaseClient'
 import { useKokoroTTS } from './useKokoroTTS'
 import { KokoroDownloadManager } from './KokoroDownloadManager'
 const TABS = ['Perfil', 'Voz', 'IA', 'Integracoes', 'Seguranca']
+
+// Context para passar initialIntegrations para todos os IntegrationField
+const IntegrationsContext = createContext(null)
 
 // Helper: get a nested value from an object using dot-path (e.g. "github.token")
 function getNested(obj, path) {
@@ -28,13 +31,14 @@ function setNested(obj, path, value) {
   return result
 }
 
-export function SettingsPanel({ settings, onUpdate, onClose }) {
+export function SettingsPanel({ settings, onUpdate, onClose, initialIntegrations }) {
   const { user } = useAuth()
   const kokoroHook = useKokoroTTS()
   const [activeTab, setActiveTab] = useState('Perfil')
   const [saveStatus, setSaveStatus] = useState('')
   const [testingVoice, setTestingVoice] = useState(false)
   const [localSettings, setLocalSettings] = useState(() => {
+    // 1.2 CORRECAO: le do localStorage na inicializacao, com fallback para props
     try {
       const stored = JSON.parse(localStorage.getItem('morpheus_settings') || '{}')
       return {
@@ -146,7 +150,7 @@ export function SettingsPanel({ settings, onUpdate, onClose }) {
             <div><label className="text-xs opacity-60">Modelo AI</label><select className="w-full bg-dark-bg border border-dark-border rounded px-3 py-2 text-sm text-cyan mt-1 font-mono" value={localSettings.ai_model || 'auto'} onChange={e => updateLocal({ ai_model: e.target.value })}><option value="auto">Auto (Groq primario)</option><option value="groq_llama">Groq Llama 3.3 70B</option><option value="groq_mixtral">Groq Mixtral 8x7B</option><option value="openrouter_qwen_coder">OpenRouter Qwen Coder</option><option value="openai_gpt4o">OpenAI GPT-4o</option><option value="claude">Claude 3.5 Sonnet</option></select></div>
             <div><label className="text-xs opacity-60">Nivel de Sarcasmo ({localSettings.sarcasm_level || 30}%)</label><input type="range" min="0" max="100" className="w-full mt-1" value={localSettings.sarcasm_level || 30} onChange={e => updateLocal({ sarcasm_level: parseInt(e.target.value) })} /></div>
           </div>}
-          {activeTab === 'Integracoes' && <div className="space-y-4">
+          {activeTab === 'Integracoes' && <IntegrationsContext.Provider value={initialIntegrations}><div className="space-y-4">
             {/* IA Providers */}
             <IntegrationSection title="IA PROVIDERS">
               {['groq','openrouter','deepseek','gemini','openai','claude'].map(key => (
@@ -252,7 +256,7 @@ export function SettingsPanel({ settings, onUpdate, onClose }) {
                 testFn={async (k) => { try { const r = await fetch('https://api.elevenlabs.io/v1/voices', { headers: { 'xi-api-key': k } }); return r.ok } catch { return false } }}
               />
             </IntegrationSection>
-          </div>}
+          </div></IntegrationsContext.Provider>}
           {activeTab === 'Seguranca' && <SegurancaTab user={user} settings={localSettings} updateLocal={updateLocal} />}
         </div>
 
@@ -420,10 +424,13 @@ function setNestedLocal(obj, path, value) {
 }
 
 function IntegrationField({ label, placeholder, storeKey, testFn, noTest, onTokenSaved }) {
+  // 1.1 CORRECAO: le do localStorage E do context na inicializacao
+  const ctxIntegrations = useContext(IntegrationsContext)
   const [value, setValue] = useState(() => {
     try {
-      const stored = JSON.parse(localStorage.getItem('morpheus_integrations') || '{}')
-      return getNestedLocal(stored, storeKey)
+      // Prioridade: context prop > localStorage
+      const source = ctxIntegrations || JSON.parse(localStorage.getItem('morpheus_integrations') || '{}')
+      return getNestedLocal(source, storeKey)
     } catch { return '' }
   })
   const [testStatus, setTestStatus] = useState('')
