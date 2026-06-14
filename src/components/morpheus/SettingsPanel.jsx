@@ -6,25 +6,74 @@ import { useKokoroTTS } from './useKokoroTTS'
 import { KokoroDownloadManager } from './KokoroDownloadManager'
 const TABS = ['Perfil', 'Voz', 'IA', 'Integracoes', 'Seguranca']
 
+// Helper: get a nested value from an object using dot-path (e.g. "github.token")
+function getNested(obj, path) {
+  return path.split('.').reduce((o, k) => (o && o[k] !== undefined) ? o[k] : '', obj)
+}
+
+// Helper: set a nested value in an object using dot-path, returning a new object
+function setNested(obj, path, value) {
+  const keys = path.split('.')
+  const result = { ...obj }
+  let current = result
+  for (let i = 0; i < keys.length - 1; i++) {
+    if (!current[keys[i]] || typeof current[keys[i]] !== 'object') {
+      current[keys[i]] = {}
+    } else {
+      current[keys[i]] = { ...current[keys[i]] }
+    }
+    current = current[keys[i]]
+  }
+  current[keys[keys.length - 1]] = value
+  return result
+}
+
 export function SettingsPanel({ settings, onUpdate, onClose }) {
   const { user } = useAuth()
   const kokoroHook = useKokoroTTS()
   const [activeTab, setActiveTab] = useState('Perfil')
   const [saved, setSaved] = useState(false)
   const [testingVoice, setTestingVoice] = useState(false)
-  const [localSettings, setLocalSettings] = useState({ ...settings })
-  const [integrations, setIntegrations] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('morpheus_integrations') || '{}') } catch { return {} }
+  const [localSettings, setLocalSettings] = useState(() => {
+    // Carrega do localStorage ao abrir, com fallback para os defaults
+    try {
+      const stored = JSON.parse(localStorage.getItem('morpheus_settings') || '{}')
+      return {
+        assistant_name: 'MORPHEUS',
+        user_name: 'Jadiel',
+        preferred_city: 'Xanxere/SC',
+        language: 'pt-BR',
+        tts_engine: 'kokoro',
+        kokoro_voice: 'af_nicole',
+        voice_speed: 1.0,
+        ai_model: 'auto',
+        sarcasm_level: 30,
+        ...stored,
+        ...settings,
+      }
+    } catch {
+      return {
+        assistant_name: 'MORPHEUS', user_name: 'Jadiel', preferred_city: 'Xanxere/SC',
+        language: 'pt-BR', tts_engine: 'kokoro', kokoro_voice: 'af_nicole',
+        voice_speed: 1.0, ai_model: 'auto', sarcasm_level: 30, ...settings,
+      }
+    }
   })
 
   const updateLocal = (patch) => {
-    setLocalSettings(prev => ({ ...prev, ...patch }))
+    setLocalSettings(prev => {
+      const next = { ...prev, ...patch }
+      // Salva imediatamente no localStorage
+      localStorage.setItem('morpheus_settings', JSON.stringify(next))
+      return next
+    })
     onUpdate(patch)
   }
 
   const handleSave = async () => {
+    // Garante que settings e integrations estao persistidos
     localStorage.setItem('morpheus_settings', JSON.stringify(localSettings))
-    localStorage.setItem('morpheus_integrations', JSON.stringify(integrations))
+    // integrations ja foram salvas pelo IntegrationField ao digitar
     if (user) {
       try {
         await supabase.from('user_settings').upsert({
@@ -53,19 +102,6 @@ export function SettingsPanel({ settings, onUpdate, onClose }) {
     } finally {
       setTestingVoice(false)
     }
-  }
-
-  const inputStyle = {
-    width: '100%',
-    background: '#050a0f',
-    border: '1px solid #0d2030',
-    borderRadius: '6px',
-    padding: '10px 12px',
-    color: '#00FFFF',
-    fontFamily: "'JetBrains Mono', monospace",
-    fontSize: '13px',
-    outline: 'none',
-    boxSizing: 'border-box',
   }
 
   return (
@@ -126,7 +162,7 @@ export function SettingsPanel({ settings, onUpdate, onClose }) {
             {/* IA Providers */}
             <IntegrationSection title="IA PROVIDERS">
               {['groq','openrouter','deepseek','gemini','openai','claude'].map(key => (
-                <IntegrationField key={key} label={`${key.toUpperCase()} API Key`} placeholder="sk-..." storeKey={`${key}_key`}
+                <IntegrationField key={key} label={`${key.toUpperCase()} API Key`} placeholder="sk-..." storeKey={`${key}.key`}
                   testFn={async (k) => {
                     const eps = { groq: 'https://api.groq.com/openai/v1/models', openrouter: 'https://openrouter.ai/api/v1/models', openai: 'https://api.openai.com/v1/models' }
                     const url = eps[key]; if (!url) return k.length > 10
@@ -138,39 +174,40 @@ export function SettingsPanel({ settings, onUpdate, onClose }) {
 
             {/* GitHub */}
             <IntegrationSection title="GITHUB">
-              <IntegrationField label="GitHub Token (PAT)" placeholder="ghp_..." storeKey="github_token"
+              <IntegrationField label="GitHub Token (PAT)" placeholder="ghp_..." storeKey="github.token"
                 testFn={async (k) => { try { const r = await fetch('https://api.github.com/user', { headers: { Authorization: `Bearer ${k}` } }); return r.ok } catch { return false } }}
               />
-              <IntegrationField label="GitHub Username" placeholder="jadiel054" storeKey="github_username" noTest />
-              <IntegrationField label="Repositorios (separados por virgula)" placeholder="morpheus-app, zarith-saas-web, vitabot" storeKey="github_repos" noTest />
+              <IntegrationField label="GitHub Username" placeholder="jadiel054" storeKey="github.username" noTest />
+              <IntegrationField label="Repositorios (separados por virgula)" placeholder="morpheus-app, zarith-saas-web, vitabot" storeKey="github.repos" noTest />
             </IntegrationSection>
 
             {/* Vercel */}
             <IntegrationSection title="VERCEL">
-              <IntegrationField label="Vercel Token" placeholder="xxx" storeKey="vercel_token"
+              <IntegrationField label="Vercel Token" placeholder="vcp_..." storeKey="vercel.token"
                 testFn={async (k) => { try { const r = await fetch('https://api.vercel.com/v2/user', { headers: { Authorization: `Bearer ${k}` } }); return r.ok } catch { return false } }}
               />
-              <IntegrationField label="Project ID" placeholder="prj_..." storeKey="vercel_project_id" noTest />
-              <IntegrationField label="Team ID" placeholder="team_..." storeKey="vercel_team_id" noTest />
+              <IntegrationField label="Project ID" placeholder="prj_..." storeKey="vercel.projectId" noTest />
+              <IntegrationField label="Team ID" placeholder="team_..." storeKey="vercel.teamId" noTest />
             </IntegrationSection>
 
             {/* Supabase */}
             <IntegrationSection title="SUPABASE">
-              <IntegrationField label="Supabase URL" placeholder="https://xxx.supabase.co" storeKey="supabase_url" noTest />
-              <IntegrationField label="Supabase Anon Key" placeholder="eyJ..." storeKey="supabase_anon_key"
+              <IntegrationField label="Supabase URL" placeholder="https://xxx.supabase.co" storeKey="supabase.url" noTest />
+              <IntegrationField label="Supabase Anon Key" placeholder="eyJ..." storeKey="supabase.anonKey"
                 testFn={async (k) => {
-                  const url = JSON.parse(localStorage.getItem('morpheus_integrations')||'{}').supabase_url
+                  const integrations = (() => { try { return JSON.parse(localStorage.getItem('morpheus_integrations') || '{}') } catch { return {} } })()
+                  const url = getNested(integrations, 'supabase.url')
                   if (!url) return false
                   try { const r = await fetch(`${url}/rest/v1/`, { headers: { apikey: k, Authorization: `Bearer ${k}` } }); return r.status < 500 } catch { return false }
                 }}
               />
-              <IntegrationField label="Supabase Service Role Key (opcional)" placeholder="eyJ..." storeKey="supabase_service_key" noTest />
+              <IntegrationField label="Supabase Service Role Key (opcional)" placeholder="eyJ..." storeKey="supabase.serviceKey" noTest />
             </IntegrationSection>
 
             {/* Telegram 10 bots */}
             <IntegrationSection title="TELEGRAM — 10 BOTS">
               {['MorpheusComando','MorpheusAlerts','MorpheusDev','MorpheusDebugger','MorpheusAnalytics','MorpheusOps','MorpheusArchitect','MorpheusAuditor','MorpheusTrainer','MorpheusMemory'].map(botName => (
-                <IntegrationField key={botName} label={botName} placeholder="123456:ABC-xxx" storeKey={`telegram_${botName.toLowerCase()}`}
+                <IntegrationField key={botName} label={botName} placeholder="123456:ABC-xxx" storeKey={`telegram.${botName.toLowerCase()}`}
                   testFn={async (token) => { try { const r = await fetch(`https://api.telegram.org/bot${token}/getMe`); const data = await r.json(); return data.ok } catch { return false } }}
                 />
               ))}
@@ -178,19 +215,19 @@ export function SettingsPanel({ settings, onUpdate, onClose }) {
 
             {/* Outros servicos */}
             <IntegrationSection title="OUTROS SERVICOS">
-              <IntegrationField label="Resend API Key (emails de alerta)" placeholder="re_..." storeKey="resend_key"
+              <IntegrationField label="Resend API Key (emails de alerta)" placeholder="re_..." storeKey="resend.key"
                 testFn={async (k) => { try { const r = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${k}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ from: 'test@resend.dev', to: 'test@test.com', subject: 'test', html: 'test' }) }); return r.status !== 401 } catch { return false } }}
               />
-              <IntegrationField label="OpenRouteService API Key (rotas/distancias)" placeholder="5b3ce3..." storeKey="openrouteservice_key" noTest />
-              <IntegrationField label="Email de alerta de seguranca" placeholder="jadiel@email.com" storeKey="alert_email" noTest />
-              <IntegrationField label="WhatsApp/SMS (numero para alertas)" placeholder="+5549999999999" storeKey="alert_phone" noTest />
-              <IntegrationField label="Brave Search API Key" placeholder="BSA..." storeKey="brave_key"
+              <IntegrationField label="OpenRouteService API Key (rotas/distancias)" placeholder="5b3ce3..." storeKey="openrouteservice.key" noTest />
+              <IntegrationField label="Email de alerta de seguranca" placeholder="jadiel@email.com" storeKey="alerts.email" noTest />
+              <IntegrationField label="WhatsApp/SMS (numero para alertas)" placeholder="+5549999999999" storeKey="alerts.phone" noTest />
+              <IntegrationField label="Brave Search API Key" placeholder="BSA..." storeKey="brave.api_key"
                 testFn={async (k) => { try { const r = await fetch('https://api.search.brave.com/res/v1/web/search?q=test', { headers: { 'X-Subscription-Token': k } }); return r.ok } catch { return false } }}
               />
-              <IntegrationField label="OpenWeather API Key" placeholder="..." storeKey="openweather_key"
+              <IntegrationField label="OpenWeather API Key" placeholder="..." storeKey="openweather.key"
                 testFn={async (k) => { try { const r = await fetch(`https://api.openweathermap.org/data/2.5/weather?q=Xanxere&appid=${k}`); return r.ok } catch { return false } }}
               />
-              <IntegrationField label="ElevenLabs API Key" placeholder="sk-..." storeKey="elevenlabs_key"
+              <IntegrationField label="ElevenLabs API Key" placeholder="sk-..." storeKey="elevenlabs.key"
                 testFn={async (k) => { try { const r = await fetch('https://api.elevenlabs.io/v1/voices', { headers: { 'xi-api-key': k } }); return r.ok } catch { return false } }}
               />
             </IntegrationSection>
@@ -390,10 +427,33 @@ function IntegrationSection({ title, children }) {
   )
 }
 
+// Helper to get a nested value using dot-path
+function getNestedLocal(obj, path) {
+  return path.split('.').reduce((o, k) => (o && o[k] !== undefined) ? o[k] : '', obj)
+}
+
+// Helper to set a nested value, returning a new object
+function setNestedLocal(obj, path, value) {
+  const keys = path.split('.')
+  const result = JSON.parse(JSON.stringify(obj))
+  let current = result
+  for (let i = 0; i < keys.length - 1; i++) {
+    if (!current[keys[i]] || typeof current[keys[i]] !== 'object') {
+      current[keys[i]] = {}
+    }
+    current = current[keys[i]]
+  }
+  current[keys[keys.length - 1]] = value
+  return result
+}
+
 function IntegrationField({ label, placeholder, storeKey, testFn, noTest }) {
+  // storeKey agora usa dot-notation: "github.token", "vercel.token", "groq.key"
   const [value, setValue] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('morpheus_integrations') || '{}')[storeKey] || '' }
-    catch { return '' }
+    try {
+      const stored = JSON.parse(localStorage.getItem('morpheus_integrations') || '{}')
+      return getNestedLocal(stored, storeKey)
+    } catch { return '' }
   })
   const [testStatus, setTestStatus] = useState('')
 
@@ -408,10 +468,16 @@ function IntegrationField({ label, placeholder, storeKey, testFn, noTest }) {
   }
 
   const handleChange = (e) => {
-    setValue(e.target.value)
-    const stored = (() => { try { return JSON.parse(localStorage.getItem('morpheus_integrations') || '{}') } catch { return {} } })()
-    stored[storeKey] = e.target.value
-    localStorage.setItem('morpheus_integrations', JSON.stringify(stored))
+    const newVal = e.target.value
+    setValue(newVal)
+    // Salva imediatamente no localStorage com estrutura aninhada
+    try {
+      const stored = JSON.parse(localStorage.getItem('morpheus_integrations') || '{}')
+      const updated = setNestedLocal(stored, storeKey, newVal)
+      localStorage.setItem('morpheus_integrations', JSON.stringify(updated))
+    } catch (err) {
+      console.error('[IntegrationField] Erro ao salvar:', err)
+    }
   }
 
   return (
@@ -422,7 +488,7 @@ function IntegrationField({ label, placeholder, storeKey, testFn, noTest }) {
       </div>
       <div style={{ display: 'flex', gap: '8px' }}>
         <input
-          type={storeKey.includes('key') || storeKey.includes('token') ? 'password' : 'text'}
+          type={storeKey.includes('key') || storeKey.includes('token') || storeKey.includes('Key') ? 'password' : 'text'}
           value={value}
           onChange={handleChange}
           placeholder={placeholder}

@@ -29,7 +29,7 @@ export async function gitOperatorCommitAndPR(filePath, content, description, rep
   }
 
   const GITHUB_TOKEN = (() => {
-    try { return JSON.parse(localStorage.getItem('morpheus_integrations') || '{}').github_key || '' }
+    try { return JSON.parse(localStorage.getItem('morpheus_integrations') || '{}').github?.token || '' }
     catch { return '' }
   })()
 

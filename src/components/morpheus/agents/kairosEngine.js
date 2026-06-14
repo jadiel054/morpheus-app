@@ -35,7 +35,8 @@ const VERIFICATION_MAP = {
 function hasCredentials(key) {
   try {
     const i = JSON.parse(localStorage.getItem('morpheus_integrations') || '{}')
-    return !!i[key]
+    // Support both nested (github.token) and flat keys
+    return !!(i.github?.token || i.vercel?.token || i.groq?.key || i.openrouter?.key || i[key])
   } catch { return false }
 }
 

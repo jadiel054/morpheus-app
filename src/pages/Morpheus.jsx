@@ -60,7 +60,7 @@ export default function Morpheus() {
 
   const [settings, setSettings] = useState(() => {
     try { return JSON.parse(localStorage.getItem('morpheus_settings')) || def() } catch { return def() }
-    function def() { return { assistant_name: 'MORPHEUS', user_name: 'Jadiel', preferred_city: 'Xanxere/SC', language: 'pt-BR', tts_engine: 'auto', kokoro_voice: 'af_nicole', voice_speed: 1.0, ai_model: 'auto', sarcasm_level: 30 } }
+    function def() { return { assistant_name: 'MORPHEUS', user_name: 'Jadiel', preferred_city: 'Xanxere/SC', language: 'pt-BR', tts_engine: 'auto', kokoro_voice: 'af_nicole', voice_speed: 1.0, ai_model: 'auto', sarcasm_level: 30, voice_enabled: true } }
   })
 
   const [evolution, setEvolution] = useState(() => loadEvolutionProfile(user?.id || 'local'))
@@ -176,12 +176,13 @@ export default function Morpheus() {
     const stored = (() => { try { return JSON.parse(localStorage.getItem('morpheus_settings') || '{}') } catch { return {} } })()
     const integrations = (() => { try { return JSON.parse(localStorage.getItem('morpheus_integrations') || '{}') } catch { return {} } })()
 
-    const groqKey       = integrations.groq_key       || stored.groq_api_key       || ''
-    const openrouterKey = integrations.openrouter_key  || stored.openrouter_api_key  || ''
-    const claudeKey     = integrations.claude_key      || stored.claude_api_key     || ''
-    const openaiKey     = integrations.openai_key      || stored.openai_api_key     || ''
-    const deepseekKey   = integrations.deepseek_key    || stored.deepseek_api_key   || ''
-    const geminiKey     = integrations.gemini_key      || stored.gemini_api_key     || ''
+    // Lê chaves aninhadas: groq.key, openrouter.key, claude.key, openai.key, deepseek.key, gemini.key
+    const groqKey       = integrations.groq?.key       || stored.groq_api_key       || ''
+    const openrouterKey = integrations.openrouter?.key  || stored.openrouter_api_key  || ''
+    const claudeKey     = integrations.claude?.key      || stored.claude_api_key     || ''
+    const openaiKey     = integrations.openai?.key      || stored.openai_api_key     || ''
+    const deepseekKey   = integrations.deepseek?.key    || stored.deepseek_api_key   || ''
+    const geminiKey     = integrations.gemini?.key      || stored.gemini_api_key     || ''
 
     const isValidKey = (k) => k && k.length > 10 && k !== 'sk-...'
 
