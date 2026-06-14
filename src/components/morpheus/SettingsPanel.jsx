@@ -4,6 +4,7 @@ import { useAuth } from '../../lib/authContext'
 import { supabase } from '../../lib/supabaseClient'
 import { useKokoroTTS } from './useKokoroTTS'
 import { KokoroDownloadManager } from './KokoroDownloadManager'
+import { testGitHubTokenScopes } from '../../lib/errorHandler'
 const TABS = ['Perfil', 'Voz', 'IA', 'Integracoes', 'Seguranca']
 
 const IntegrationsContext = createContext(null)
@@ -131,7 +132,7 @@ export function SettingsPanel({ settings, onUpdate, onClose, initialIntegrations
             </IntegrationSection>
             <IntegrationSection title="GITHUB">
               <IntegrationField label="GitHub Token (PAT)" placeholder="ghp_..." storeKey="github.token"
-                testFn={async(k)=>{try{const r=await fetch('https://api.github.com/user',{headers:{Authorization:`Bearer ${k}`}});return r.ok}catch{return false}}}
+                testFn={async(k)=>{const r=await testGitHubTokenScopes(k);return r.ok}}
                 onTokenSaved={async(token)=>{if(!token||token.length<10)return;try{const[rr,ur]=await Promise.all([fetch('https://api.github.com/user/repos?per_page=100&sort=updated',{headers:{Authorization:`Bearer ${token}`}}),fetch('https://api.github.com/user',{headers:{Authorization:`Bearer ${token}`}})]);if(rr.ok){const repos=await rr.json();const rn=repos.map(r=>r.name).join(', ');const s=JSON.parse(localStorage.getItem(STORAGE_KEY)||'{}');s.github={...s.github,repos:rn};saveIntegrations(s);const reg=repos.map(r=>({name:r.name,full_name:r.full_name,url:r.html_url,private:r.private,language:r.language,updated:r.updated_at,description:r.description}));localStorage.setItem('morpheus_repo_registry',JSON.stringify(reg))}if(ur.ok){const ud=await ur.json();const s=JSON.parse(localStorage.getItem(STORAGE_KEY)||'{}');s.github={...s.github,username:ud.login};saveIntegrations(s)}}catch(err){console.error('[GitHub]',err)}}}
               />
               <IntegrationField label="GitHub Username" placeholder="jadiel054" storeKey="github.username" noTest />
@@ -238,7 +239,25 @@ function IntegrationField({ label, placeholder, storeKey, testFn, noTest, onToke
     } catch { return '' }
   })
   const [testStatus, setTestStatus] = useState('')
-  const handleTest = async () => { if (!value || value.length < 5) { setTestStatus('Vazia'); return } setTestStatus('...'); try { const ok = await testFn(value); setTestStatus(ok ? 'OK' : 'Invalida') } catch { setTestStatus('Erro') } setTimeout(() => setTestStatus(''), 3000) }
+  const [testDetail, setTestDetail] = useState(null)
+  const isGithubToken = storeKey === 'github.token'
+  const handleTest = async () => {
+    if (!value || value.length < 5) { setTestStatus('Vazia'); setTestDetail(null); return }
+    setTestStatus('...'); setTestDetail(null)
+    try {
+      if (isGithubToken) {
+        const detail = await testGitHubTokenScopes(value)
+        setTestDetail(detail)
+        if (!detail.ok) setTestStatus('Invalida')
+        else if (detail.warning) setTestStatus('OK*')
+        else setTestStatus('OK')
+      } else {
+        const ok = await testFn(value)
+        setTestStatus(ok ? 'OK' : 'Invalida')
+      }
+    } catch { setTestStatus('Erro') }
+    setTimeout(() => { setTestStatus(''); setTestDetail(null) }, 8000)
+  }
   const handleChange = (e) => {
     const newVal = e.target.value; setValue(newVal)
     try {
@@ -249,5 +268,16 @@ function IntegrationField({ label, placeholder, storeKey, testFn, noTest, onToke
       if (onTokenSaved && storeKey === 'github.token') onTokenSaved(newVal)
     } catch(err) { console.error('[IntegrationField]', err) }
   }
-  return (<div style={{ marginBottom:'12px' }}><div style={{ color:'rgba(0,255,255,0.6)',fontSize:'11px',letterSpacing:'1px',marginBottom:'6px' }}>{label}</div><div style={{ display:'flex',gap:'8px' }}><input type={storeKey.includes('key')||storeKey.includes('token')||storeKey.includes('Key')?'password':'text'} value={value} onChange={handleChange} placeholder={placeholder} style={{ flex:1,background:'#050a0f',border:'1px solid #0d2030',borderRadius:'8px',padding:'10px 12px',color:'#e2e8f0',fontFamily:'monospace',fontSize:'13px',outline:'none' }} />{!noTest&&<button onClick={handleTest} style={{ padding:'10px 12px',background:'transparent',border:'1px solid rgba(0,255,255,0.2)',borderRadius:'8px',color:testStatus==='OK'?'#00FFFF':testStatus==='Invalida'?'#ff0080':'rgba(0,255,255,0.6)',fontFamily:'monospace',fontSize:'11px',cursor:'pointer',whiteSpace:'nowrap',minWidth:'70px' }}>{testStatus||'TESTAR'}</button>}</div></div>)
+  return (<div style={{ marginBottom:'12px' }}>
+    <div style={{ color:'rgba(0,255,255,0.6)',fontSize:'11px',letterSpacing:'1px',marginBottom:'6px' }}>{label}</div>
+    <div style={{ display:'flex',gap:'8px' }}>
+      <input type={storeKey.includes('key')||storeKey.includes('token')||storeKey.includes('Key')?'password':'text'} value={value} onChange={handleChange} placeholder={placeholder} style={{ flex:1,background:'#050a0f',border:'1px solid #0d2030',borderRadius:'8px',padding:'10px 12px',color:'#e2e8f0',fontFamily:'monospace',fontSize:'13px',outline:'none' }} />
+      {!noTest&&<button onClick={handleTest} style={{ padding:'10px 12px',background:'transparent',border:'1px solid rgba(0,255,255,0.2)',borderRadius:'8px',color:testStatus==='OK'?'#00FFFF':testStatus==='OK*'?'orange':testStatus==='Invalida'?'#ff0080':'rgba(0,255,255,0.6)',fontFamily:'monospace',fontSize:'11px',cursor:'pointer',whiteSpace:'nowrap',minWidth:'70px' }}>{testStatus||'TESTAR'}</button>}
+    </div>
+    {testDetail && (
+      <div style={{ marginTop:'8px',padding:'10px 12px',background:testDetail.warning?'rgba(255,165,0,0.1)':testDetail.ok?'rgba(0,255,255,0.08)':'rgba(255,0,128,0.08)',border:`1px solid ${testDetail.warning?'orange':testDetail.ok?'rgba(0,255,255,0.3)':'rgba(255,0,128,0.3)'}`,borderRadius:'8px',fontFamily:'monospace',fontSize:'11px',color:testDetail.warning?'orange':'#00FFFF',whiteSpace:'pre-wrap' }}>
+        {testDetail.message}
+      </div>
+    )}
+  </div>)
 }
