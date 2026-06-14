@@ -16,7 +16,6 @@ export function SettingsPanel({ settings, onUpdate, onClose }) {
   const [integrations, setIntegrations] = useState(() => {
     try { return JSON.parse(localStorage.getItem('morpheus_integrations') || '{}') } catch { return {} }
   })
-  const [testStatus, setTestStatus] = useState({})
 
   const updateLocal = (patch) => {
     setLocalSettings(prev => ({ ...prev, ...patch }))
@@ -50,42 +49,10 @@ export function SettingsPanel({ settings, onUpdate, onClose }) {
         localSettings.voice_speed || 1.0
       )
     } catch (err) {
-      if (typeof window !== 'undefined' && window.speechSynthesis) {
-        const utt = new SpeechSynthesisUtterance('Ola Jadiel. MORPHEUS online.')
-        utt.lang = 'pt-BR'
-        window.speechSynthesis.speak(utt)
-      }
+      console.warn('[TestVoice] Kokoro falhou:', err.message)
     } finally {
       setTestingVoice(false)
     }
-  }
-
-  const testApiKey = async (provider, key) => {
-    if (!key || key === 'sk-...') {
-      setTestStatus(s => ({ ...s, [provider]: 'Vazia' }))
-      return
-    }
-    setTestStatus(s => ({ ...s, [provider]: '...' }))
-
-    const endpoints = {
-      groq:        ['https://api.groq.com/openai/v1/models', { Authorization: `Bearer ${key}` }],
-      openrouter:  ['https://openrouter.ai/api/v1/models', { Authorization: `Bearer ${key}` }],
-      openai:      ['https://api.openai.com/v1/models', { Authorization: `Bearer ${key}` }],
-      elevenlabs:  ['https://api.elevenlabs.io/v1/voices', { 'xi-api-key': key }],
-      openweather: [`https://api.openweathermap.org/data/2.5/weather?q=Xanxere&appid=${key}`, {}],
-    }
-
-    const [url, headers] = endpoints[provider] || []
-    if (!url) return
-
-    try {
-      const res = await fetch(url, { headers })
-      setTestStatus(s => ({ ...s, [provider]: res.ok ? 'OK' : 'Invalida' }))
-    } catch {
-      setTestStatus(s => ({ ...s, [provider]: 'Erro' }))
-    }
-
-    setTimeout(() => setTestStatus(s => ({ ...s, [provider]: '' })), 3000)
   }
 
   const inputStyle = {
@@ -118,11 +85,9 @@ export function SettingsPanel({ settings, onUpdate, onClose }) {
               onDownloadComplete={() => {}}
               onSkip={() => {}}
             />
-            <div><label className="text-xs opacity-60">Motor TTS</label><select className="w-full bg-dark-bg border border-dark-border rounded px-3 py-2 text-sm text-cyan mt-1 font-mono" value={localSettings.tts_engine || 'auto'} onChange={e => updateLocal({ tts_engine: e.target.value })}>
-              <option value="auto">Auto (Kokoro + fallback Web Speech)</option>
+            <div><label className="text-xs opacity-60">Motor TTS</label><select className="w-full bg-dark-bg border border-dark-border rounded px-3 py-2 text-sm text-cyan mt-1 font-mono" value={localSettings.tts_engine || 'kokoro'} onChange={e => updateLocal({ tts_engine: e.target.value })}>
               <option value="kokoro">Kokoro (Local/Gratuito)</option>
               <option value="elevenlabs">ElevenLabs (Premium)</option>
-              <option value="webspeech">Web Speech API</option>
               <option value="disabled">Desativado</option>
             </select></div>
             <div><label className="text-xs opacity-60">Voz Kokoro</label><select className="w-full bg-dark-bg border border-dark-border rounded px-3 py-2 text-sm text-cyan mt-1 font-mono" value={localSettings.kokoro_voice || 'af_nicole'} onChange={e => updateLocal({ kokoro_voice: e.target.value })}>
@@ -158,29 +123,79 @@ export function SettingsPanel({ settings, onUpdate, onClose }) {
             <div><label className="text-xs opacity-60">Nivel de Sarcasmo ({localSettings.sarcasm_level || 30}%)</label><input type="range" min="0" max="100" className="w-full mt-1" value={localSettings.sarcasm_level || 30} onChange={e => updateLocal({ sarcasm_level: parseInt(e.target.value) })} /></div>
           </div>}
           {activeTab === 'Integracoes' && <div className="space-y-4">
-            {['groq','openrouter','deepseek','gemini','openai','claude','elevenlabs','openweather','brave'].map(key => (
-              <div key={key}>
-                <label className="text-xs opacity-60">{key.toUpperCase()} API Key</label>
-                <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: '4px' }}>
-                  <input type="password"
-                    style={{ flex: 1, ...inputStyle }}
-                    value={integrations[key + '_key'] || ''}
-                    onChange={e => setIntegrations({...integrations, [key + '_key']: e.target.value})}
-                    placeholder="sk-..." />
-                  <button onClick={() => testApiKey(key, integrations[key + '_key'])}
-                    style={{
-                      padding: '10px 12px', background: 'transparent',
-                      border: '1px solid rgba(0,255,255,0.3)', borderRadius: '8px',
-                      color: '#00FFFF', fontFamily: 'monospace', fontSize: '11px',
-                      cursor: 'pointer', whiteSpace: 'nowrap',
-                    }}>
-                    {testStatus[key] || 'TESTAR'}
-                  </button>
-                </div>
-              </div>
-            ))}
+            {/* IA Providers */}
+            <IntegrationSection title="IA PROVIDERS">
+              {['groq','openrouter','deepseek','gemini','openai','claude'].map(key => (
+                <IntegrationField key={key} label={`${key.toUpperCase()} API Key`} placeholder="sk-..." storeKey={`${key}_key`}
+                  testFn={async (k) => {
+                    const eps = { groq: 'https://api.groq.com/openai/v1/models', openrouter: 'https://openrouter.ai/api/v1/models', openai: 'https://api.openai.com/v1/models' }
+                    const url = eps[key]; if (!url) return k.length > 10
+                    try { const r = await fetch(url, { headers: { Authorization: `Bearer ${k}` } }); return r.ok } catch { return false }
+                  }}
+                />
+              ))}
+            </IntegrationSection>
+
+            {/* GitHub */}
+            <IntegrationSection title="GITHUB">
+              <IntegrationField label="GitHub Token (PAT)" placeholder="ghp_..." storeKey="github_token"
+                testFn={async (k) => { try { const r = await fetch('https://api.github.com/user', { headers: { Authorization: `Bearer ${k}` } }); return r.ok } catch { return false } }}
+              />
+              <IntegrationField label="GitHub Username" placeholder="jadiel054" storeKey="github_username" noTest />
+              <IntegrationField label="Repositorios (separados por virgula)" placeholder="morpheus-app, zarith-saas-web, vitabot" storeKey="github_repos" noTest />
+            </IntegrationSection>
+
+            {/* Vercel */}
+            <IntegrationSection title="VERCEL">
+              <IntegrationField label="Vercel Token" placeholder="xxx" storeKey="vercel_token"
+                testFn={async (k) => { try { const r = await fetch('https://api.vercel.com/v2/user', { headers: { Authorization: `Bearer ${k}` } }); return r.ok } catch { return false } }}
+              />
+              <IntegrationField label="Project ID" placeholder="prj_..." storeKey="vercel_project_id" noTest />
+              <IntegrationField label="Team ID" placeholder="team_..." storeKey="vercel_team_id" noTest />
+            </IntegrationSection>
+
+            {/* Supabase */}
+            <IntegrationSection title="SUPABASE">
+              <IntegrationField label="Supabase URL" placeholder="https://xxx.supabase.co" storeKey="supabase_url" noTest />
+              <IntegrationField label="Supabase Anon Key" placeholder="eyJ..." storeKey="supabase_anon_key"
+                testFn={async (k) => {
+                  const url = JSON.parse(localStorage.getItem('morpheus_integrations')||'{}').supabase_url
+                  if (!url) return false
+                  try { const r = await fetch(`${url}/rest/v1/`, { headers: { apikey: k, Authorization: `Bearer ${k}` } }); return r.status < 500 } catch { return false }
+                }}
+              />
+              <IntegrationField label="Supabase Service Role Key (opcional)" placeholder="eyJ..." storeKey="supabase_service_key" noTest />
+            </IntegrationSection>
+
+            {/* Telegram 10 bots */}
+            <IntegrationSection title="TELEGRAM — 10 BOTS">
+              {['MorpheusComando','MorpheusAlerts','MorpheusDev','MorpheusDebugger','MorpheusAnalytics','MorpheusOps','MorpheusArchitect','MorpheusAuditor','MorpheusTrainer','MorpheusMemory'].map(botName => (
+                <IntegrationField key={botName} label={botName} placeholder="123456:ABC-xxx" storeKey={`telegram_${botName.toLowerCase()}`}
+                  testFn={async (token) => { try { const r = await fetch(`https://api.telegram.org/bot${token}/getMe`); const data = await r.json(); return data.ok } catch { return false } }}
+                />
+              ))}
+            </IntegrationSection>
+
+            {/* Outros servicos */}
+            <IntegrationSection title="OUTROS SERVICOS">
+              <IntegrationField label="Resend API Key (emails de alerta)" placeholder="re_..." storeKey="resend_key"
+                testFn={async (k) => { try { const r = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${k}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ from: 'test@resend.dev', to: 'test@test.com', subject: 'test', html: 'test' }) }); return r.status !== 401 } catch { return false } }}
+              />
+              <IntegrationField label="OpenRouteService API Key (rotas/distancias)" placeholder="5b3ce3..." storeKey="openrouteservice_key" noTest />
+              <IntegrationField label="Email de alerta de seguranca" placeholder="jadiel@email.com" storeKey="alert_email" noTest />
+              <IntegrationField label="WhatsApp/SMS (numero para alertas)" placeholder="+5549999999999" storeKey="alert_phone" noTest />
+              <IntegrationField label="Brave Search API Key" placeholder="BSA..." storeKey="brave_key"
+                testFn={async (k) => { try { const r = await fetch('https://api.search.brave.com/res/v1/web/search?q=test', { headers: { 'X-Subscription-Token': k } }); return r.ok } catch { return false } }}
+              />
+              <IntegrationField label="OpenWeather API Key" placeholder="..." storeKey="openweather_key"
+                testFn={async (k) => { try { const r = await fetch(`https://api.openweathermap.org/data/2.5/weather?q=Xanxere&appid=${k}`); return r.ok } catch { return false } }}
+              />
+              <IntegrationField label="ElevenLabs API Key" placeholder="sk-..." storeKey="elevenlabs_key"
+                testFn={async (k) => { try { const r = await fetch('https://api.elevenlabs.io/v1/voices', { headers: { 'xi-api-key': k } }); return r.ok } catch { return false } }}
+              />
+            </IntegrationSection>
           </div>}
-          {activeTab === 'Seguranca' && <div className="space-y-4"><div><label className="text-xs opacity-60">PIN de Emergencia (6 digitos)</label><input type="password" maxLength={6} className="w-full bg-dark-bg border border-dark-border rounded px-3 py-2 text-sm text-cyan mt-1 font-mono tracking-widest" defaultValue="123456" onChange={e => localStorage.setItem('morpheus_emergency_pin', e.target.value)} /></div><p className="text-xs opacity-40">WebAuthn / Biometria: configure no dispositivo.</p></div>}
+          {activeTab === 'Seguranca' && <SegurancaTab user={user} settings={localSettings} updateLocal={updateLocal} />}
         </div>
 
         <div style={{
@@ -210,6 +225,225 @@ export function SettingsPanel({ settings, onUpdate, onClose }) {
             FECHAR
           </button>
         </div>
+      </div>
+    </div>
+  )
+}
+
+function SegurancaTab({ user, settings, updateLocal }) {
+  const [pin, setPin] = useState(() => localStorage.getItem('morpheus_emergency_pin') || '')
+  const [resetting, setResetting] = useState(false)
+  const [resetMsg, setResetMsg] = useState('')
+  const [emailConfirmed] = useState(() => user?.email_confirmed_at != null)
+
+  const savePin = () => {
+    localStorage.setItem('morpheus_emergency_pin', pin)
+    alert('PIN salvo com sucesso!')
+  }
+
+  const handleResetPassword = async () => {
+    setResetting(true)
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(user.email, {
+        redirectTo: `${window.location.origin}/?reset=true`
+      })
+      setResetMsg(error ? `Erro: ${error.message}` : `Link enviado para ${user.email}`)
+    } catch (err) {
+      setResetMsg(`Erro: ${err.message}`)
+    }
+    setResetting(false)
+    setTimeout(() => setResetMsg(''), 5000)
+  }
+
+  const handleResendConfirmation = async () => {
+    try {
+      const { error } = await supabase.auth.resend({ type: 'signup', email: user.email })
+      if (!error) alert('Email de confirmacao reenviado!')
+      else alert('Erro: ' + error.message)
+    } catch (err) {
+      alert('Erro: ' + err.message)
+    }
+  }
+
+  const handleDeleteAccount = async () => {
+    const confirm1 = window.confirm('Tem certeza? Esta acao e IRREVERSIVEL.')
+    if (!confirm1) return
+    const confirm2 = window.prompt('Digite DELETE para confirmar:')
+    if (confirm2 !== 'DELETE') return
+
+    try {
+      await supabase.from('conversations').delete().eq('user_id', user.id)
+      await supabase.from('morpheus_memory').delete().eq('user_id', user.id)
+      await supabase.from('system_status').delete().eq('user_id', user.id)
+      await supabase.from('user_settings').delete().eq('id', user.id)
+      await supabase.auth.signOut()
+      window.location.reload()
+    } catch (err) {
+      alert('Erro ao excluir conta: ' + err.message)
+    }
+  }
+
+  const sectionStyle = { marginBottom: '20px' }
+  const titleStyle = { color: 'rgba(0,255,255,0.4)', fontSize: '10px', letterSpacing: '3px', marginBottom: '8px', borderBottom: '1px solid rgba(0,255,255,0.1)', paddingBottom: '6px' }
+  const descStyle = { color: 'rgba(0,255,255,0.4)', fontSize: '11px', fontFamily: 'monospace', marginBottom: '8px', lineHeight: 1.5 }
+  const actionBtnStyle = { padding: '10px 16px', background: 'transparent', border: '1px solid rgba(0,255,255,0.2)', borderRadius: '8px', color: '#00FFFF', fontFamily: 'monospace', fontSize: '12px', cursor: 'pointer', letterSpacing: '1px' }
+  const inputStyle = { width: '100%', background: '#050a0f', border: '1px solid #0d2030', borderRadius: '8px', padding: '10px 12px', color: '#e2e8f0', fontFamily: 'monospace', fontSize: '13px', outline: 'none', boxSizing: 'border-box' }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+      {/* PIN de emergencia */}
+      <div style={sectionStyle}>
+        <div style={titleStyle}>PIN DE EMERGENCIA</div>
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <input type="password" maxLength={6} placeholder="6 digitos" value={pin}
+            onChange={e => setPin(e.target.value.replace(/\D/g,'').slice(0,6))}
+            style={{ flex: 1, ...inputStyle }} />
+          <button onClick={savePin} style={actionBtnStyle}>Salvar PIN</button>
+        </div>
+      </div>
+
+      {/* Redefinir senha */}
+      <div style={sectionStyle}>
+        <div style={titleStyle}>REDEFINIR SENHA</div>
+        <p style={descStyle}>Enviar link de redefinicao para o email da conta.</p>
+        <button onClick={handleResetPassword} disabled={resetting} style={actionBtnStyle}>
+          {resetting ? 'Enviando...' : 'Enviar link de redefinicao'}
+        </button>
+        {resetMsg && <p style={{ color: '#00FFFF', fontSize: '12px', fontFamily: 'monospace', marginTop: '8px' }}>{resetMsg}</p>}
+      </div>
+
+      {/* Confirmacao de email */}
+      <div style={sectionStyle}>
+        <div style={titleStyle}>CONFIRMACAO DE EMAIL</div>
+        <p style={descStyle}>
+          Status: {emailConfirmed ? 'Email confirmado' : 'Email nao confirmado'}
+        </p>
+        {!emailConfirmed && (
+          <button onClick={handleResendConfirmation} style={actionBtnStyle}>
+            Reenviar confirmacao
+          </button>
+        )}
+      </div>
+
+      {/* Notificacoes de seguranca */}
+      <div style={sectionStyle}>
+        <div style={titleStyle}>NOTIFICACOES DE SEGURANCA</div>
+        <ToggleRow label="Alertas por email (novo dispositivo, login suspeito)"
+          value={settings.security_email_alerts}
+          onChange={v => updateLocal({ security_email_alerts: v })} />
+        <ToggleRow label="Alertas por WhatsApp/SMS"
+          value={settings.security_sms_alerts}
+          onChange={v => updateLocal({ security_sms_alerts: v })} />
+        <p style={descStyle}>Configure o email e telefone na aba Integracoes > Outros Servicos.</p>
+      </div>
+
+      {/* Zona de perigo */}
+      <div style={sectionStyle}>
+        <div style={{ ...titleStyle, color: 'rgba(255,0,128,0.6)', borderBottomColor: 'rgba(255,0,128,0.2)' }}>ZONA DE PERIGO</div>
+        <button onClick={handleDeleteAccount} style={{
+          ...actionBtnStyle,
+          background: 'rgba(255,0,128,0.1)',
+          border: '1px solid rgba(255,0,128,0.3)',
+          color: '#ff0080',
+        }}>
+          Excluir conta permanentemente
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function ToggleRow({ label, value, onChange }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 0' }}>
+      <span style={{ color: 'rgba(0,255,255,0.6)', fontSize: '11px', fontFamily: 'monospace' }}>{label}</span>
+      <button onClick={() => onChange(!value)} style={{
+        width: '44px', height: '24px', borderRadius: '12px', border: 'none',
+        background: value ? '#00FFFF' : 'rgba(0,255,255,0.15)',
+        cursor: 'pointer', position: 'relative', transition: 'background 0.2s',
+      }}>
+        <div style={{
+          width: '18px', height: '18px', borderRadius: '50%',
+          background: value ? '#050a0f' : 'rgba(0,255,255,0.5)',
+          position: 'absolute', top: '3px',
+          left: value ? '23px' : '3px',
+          transition: 'left 0.2s',
+        }}/>
+      </button>
+    </div>
+  )
+}
+
+function IntegrationSection({ title, children }) {
+  return (
+    <div style={{ marginBottom: '24px' }}>
+      <div style={{
+        color: 'rgba(0,255,255,0.4)', fontSize: '10px',
+        letterSpacing: '3px', marginBottom: '12px',
+        borderBottom: '1px solid rgba(0,255,255,0.1)',
+        paddingBottom: '6px',
+      }}>
+        {title}
+      </div>
+      {children}
+    </div>
+  )
+}
+
+function IntegrationField({ label, placeholder, storeKey, testFn, noTest }) {
+  const [value, setValue] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('morpheus_integrations') || '{}')[storeKey] || '' }
+    catch { return '' }
+  })
+  const [testStatus, setTestStatus] = useState('')
+
+  const handleTest = async () => {
+    if (!value || value.length < 5) { setTestStatus('Vazia'); return }
+    setTestStatus('...')
+    try {
+      const ok = await testFn(value)
+      setTestStatus(ok ? 'OK' : 'Invalida')
+    } catch { setTestStatus('Erro') }
+    setTimeout(() => setTestStatus(''), 3000)
+  }
+
+  const handleChange = (e) => {
+    setValue(e.target.value)
+    const stored = (() => { try { return JSON.parse(localStorage.getItem('morpheus_integrations') || '{}') } catch { return {} } })()
+    stored[storeKey] = e.target.value
+    localStorage.setItem('morpheus_integrations', JSON.stringify(stored))
+  }
+
+  return (
+    <div style={{ marginBottom: '12px' }}>
+      <div style={{ color: 'rgba(0,255,255,0.6)', fontSize: '11px',
+        letterSpacing: '1px', marginBottom: '6px' }}>
+        {label}
+      </div>
+      <div style={{ display: 'flex', gap: '8px' }}>
+        <input
+          type={storeKey.includes('key') || storeKey.includes('token') ? 'password' : 'text'}
+          value={value}
+          onChange={handleChange}
+          placeholder={placeholder}
+          style={{
+            flex: 1, background: '#050a0f',
+            border: '1px solid #0d2030', borderRadius: '8px',
+            padding: '10px 12px', color: '#e2e8f0',
+            fontFamily: 'monospace', fontSize: '13px', outline: 'none',
+          }}
+        />
+        {!noTest && (
+          <button onClick={handleTest} style={{
+            padding: '10px 12px', background: 'transparent',
+            border: '1px solid rgba(0,255,255,0.2)', borderRadius: '8px',
+            color: testStatus === 'OK' ? '#00FFFF' : testStatus === 'Invalida' ? '#ff0080' : 'rgba(0,255,255,0.6)',
+            fontFamily: 'monospace', fontSize: '11px',
+            cursor: 'pointer', whiteSpace: 'nowrap', minWidth: '70px',
+          }}>
+            {testStatus || 'TESTAR'}
+          </button>
+        )}
       </div>
     </div>
   )

@@ -1,94 +1,118 @@
 import { useRef, useState, useCallback } from 'react'
 
 const CACHE_KEY = 'kokoro-model-downloaded'
-const KOKORO_CDN = 'https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/+esm'
 
-let ttsInstance = null
+let workerInstance = null
+let messageIdCounter = 0
+const pendingCallbacks = new Map()
+
+function getWorker() {
+  if (!workerInstance) {
+    workerInstance = new Worker('/kokoro-worker.js')
+    workerInstance.onmessage = (event) => {
+      const { type, id, audioBuffer, error, status } = event.data
+      if (type === 'AUDIO') {
+        const cb = pendingCallbacks.get(id)
+        if (cb) {
+          pendingCallbacks.delete(id)
+          cb.resolve(audioBuffer)
+        }
+      }
+      if (type === 'ERROR') {
+        const cb = pendingCallbacks.get(id)
+        if (cb) {
+          pendingCallbacks.delete(id)
+          cb.reject(new Error(error))
+        }
+      }
+      if (type === 'STATUS') {
+        console.log(`[Kokoro Worker] ${status}`)
+      }
+    }
+    workerInstance.onerror = (err) => {
+      console.error('[Kokoro Worker] Erro:', err)
+    }
+  }
+  return workerInstance
+}
+
+export const KOKORO_VOICES = [
+  { id: 'af_nicole',  name: 'Nicole',  gender: 'F', style: 'Natural' },
+  { id: 'af_sky',     name: 'Sky',     gender: 'F', style: 'Calorosa' },
+  { id: 'af_heart',   name: 'Heart',   gender: 'F', style: 'Empatica' },
+  { id: 'af_sarah',   name: 'Sarah',   gender: 'F', style: 'Profissional' },
+  { id: 'am_eric',    name: 'Eric',    gender: 'M', style: 'Grave' },
+  { id: 'am_michael', name: 'Michael', gender: 'M', style: 'Robotico' },
+  { id: 'am_adam',    name: 'Adam',    gender: 'M', style: 'Cinematico' },
+]
 
 export function useKokoroTTS() {
   const [isSpeaking, setIsSpeaking] = useState(false)
   const [isLoading,  setIsLoading]  = useState(false)
   const [isReady,    setIsReady]    = useState(
-    localStorage.getItem(CACHE_KEY) === 'true'
+    () => localStorage.getItem(CACHE_KEY) === 'true'
   )
-  const audioRef = useRef(null)
-
-  const loadTTS = useCallback(async () => {
-    if (ttsInstance) return ttsInstance
-
-    if (localStorage.getItem(CACHE_KEY) !== 'true') {
-      throw new Error('Modelo nao baixado. Va em Configuracoes > Voz para baixar.')
-    }
-
-    setIsLoading(true)
-    try {
-      const mod = await import(/* @vite-ignore */ KOKORO_CDN)
-      const KokoroTTS = mod.KokoroTTS || mod.default?.KokoroTTS
-      if (!KokoroTTS) throw new Error('KokoroTTS nao encontrado')
-
-      ttsInstance = await KokoroTTS.from_pretrained(
-        'onnx-community/Kokoro-82M-ONNX',
-        { dtype: 'q8', device: 'wasm' }
-      )
-      setIsReady(true)
-      return ttsInstance
-    } finally {
-      setIsLoading(false)
-    }
-  }, [])
+  const audioRef    = useRef(null)
+  const currentIdRef = useRef(null)
 
   const speak = useCallback(async (text, voice = 'af_nicole', speed = 1.0, onDone) => {
     if (audioRef.current) {
       audioRef.current.pause()
+      audioRef.current.src = ''
       audioRef.current = null
     }
 
     if (localStorage.getItem(CACHE_KEY) !== 'true') {
-      throw new Error('Kokoro nao instalado')
+      throw new Error('Kokoro nao instalado. Baixe em Configuracoes > Voz.')
     }
 
+    const id = ++messageIdCounter
+    currentIdRef.current = id
+    setIsLoading(true)
+
     try {
+      const audioBuffer = await new Promise((resolve, reject) => {
+        pendingCallbacks.set(id, { resolve, reject })
+        getWorker().postMessage({ type: 'SPEAK', text, voice, speed, id })
+      })
+
+      if (currentIdRef.current !== id) return
+
+      setIsLoading(false)
       setIsSpeaking(true)
-      const tts = await loadTTS()
-      const result = await tts.generate(text, { voice, speed })
 
-      let audioUrl
-      if (result instanceof Blob) {
-        audioUrl = URL.createObjectURL(result)
-      } else if (result?.blob) {
-        audioUrl = URL.createObjectURL(result.blob)
-      } else {
-        const blob = new Blob([result], { type: 'audio/wav' })
-        audioUrl = URL.createObjectURL(blob)
-      }
-
-      const audio = new Audio(audioUrl)
+      const blob = new Blob([audioBuffer], { type: 'audio/wav' })
+      const url  = URL.createObjectURL(blob)
+      const audio = new Audio(url)
       audioRef.current = audio
 
       audio.onended = () => {
         setIsSpeaking(false)
-        URL.revokeObjectURL(audioUrl)
+        URL.revokeObjectURL(url)
         onDone?.()
       }
       audio.onerror = () => {
         setIsSpeaking(false)
-        URL.revokeObjectURL(audioUrl)
-        throw new Error('Erro ao reproduzir')
+        URL.revokeObjectURL(url)
       }
       await audio.play()
     } catch (err) {
+      setIsLoading(false)
       setIsSpeaking(false)
       throw err
     }
-  }, [loadTTS])
+  }, [])
 
   const stop = useCallback(() => {
+    currentIdRef.current = null
     if (audioRef.current) {
       audioRef.current.pause()
+      audioRef.current.src = ''
       audioRef.current = null
     }
     setIsSpeaking(false)
+    setIsLoading(false)
   }, [])
 
-  return { isSpeaking, isLoading, isReady, speak, stop }
+  return { isSpeaking, isLoading, isReady, speak, stop, voices: KOKORO_VOICES }
 }

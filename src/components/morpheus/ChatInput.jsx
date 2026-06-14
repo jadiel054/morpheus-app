@@ -181,17 +181,17 @@ export function ChatInput({ onSend, isLoading, isListening, onToggleMic, isSpeak
           onClick={toggleVoice}
           title={voiceEnabled ? 'Desativar voz' : 'Ativar voz'}
           style={{
-            background: 'transparent',
-            border: '1px solid rgba(0,255,255,0.2)',
+            padding: '8px 12px',
+            background: voiceEnabled ? 'rgba(0,255,255,0.15)' : 'rgba(255,0,128,0.1)',
+            border: `1px solid ${voiceEnabled ? '#00FFFF' : 'rgba(255,0,128,0.3)'}`,
             borderRadius: '8px',
-            padding: '6px 8px',
-            color: voiceEnabled ? '#00FFFF' : 'rgba(0,255,255,0.2)',
-            cursor: 'pointer',
-            fontSize: '14px',
-            transition: 'all 0.2s',
+            color: voiceEnabled ? '#00FFFF' : 'rgba(255,0,128,0.7)',
+            fontFamily: 'monospace', fontSize: '12px',
+            cursor: 'pointer', letterSpacing: '1px',
+            minHeight: '36px',
           }}
         >
-          {voiceEnabled ? 'ON' : 'OFF'}
+          {voiceEnabled ? 'VOZ' : 'VOZ'}
         </button>
 
         <button

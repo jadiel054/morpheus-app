@@ -190,14 +190,6 @@ export function KokoroDownloadManager({ onDownloadComplete, onSkip }) {
           }}>
           {status === 'downloading' ? `${progress}%` : 'BAIXAR KOKORO'}
         </button>
-        <button onClick={onSkip} style={{
-          padding: '12px 16px', background: 'transparent',
-          border: '1px solid rgba(0,255,255,0.2)', borderRadius: '8px',
-          color: 'rgba(0,255,255,0.5)', fontFamily: 'monospace',
-          fontSize: '12px', cursor: 'pointer',
-        }}>
-          Usar voz nativa
-        </button>
       </div>
       <p style={{ color: 'rgba(0,255,255,0.3)', fontSize: '10px',
         marginTop: '10px', textAlign: 'center' }}>
