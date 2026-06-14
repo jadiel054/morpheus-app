@@ -190,12 +190,12 @@ export default function Morpheus() {
     }
   }, [authState, user])
 
-  // Carrega memoria do Supabase no inicio da sessao
+  // Carrega memoria E integracoes do Supabase no inicio da sessao
   useEffect(() => {
     if (user) {
       supabase
         .from('user_settings')
-        .select('memory_facts, memory_summary, user_name, preferred_city')
+        .select('memory_facts, memory_summary, user_name, preferred_city, integrations')
         .eq('id', user.id)
         .single()
         .then(({ data }) => {
@@ -211,6 +211,12 @@ export default function Morpheus() {
                 user_name: data.user_name || prev.user_name,
                 preferred_city: data.preferred_city || prev.preferred_city,
               }))
+            }
+            // TAREFA 3.3: Carrega integracoes do Supabase (fonte de verdade)
+            if (data.integrations && Object.keys(data.integrations).length > 0) {
+              localStorage.setItem('morpheus_integrations', JSON.stringify(data.integrations))
+              sessionStorage.setItem('morpheus_integrations', JSON.stringify(data.integrations))
+              console.log('[MORPHEUS] Integrations loaded from Supabase:', Object.keys(data.integrations).join(', '))
             }
           }
         })
@@ -471,6 +477,7 @@ export default function Morpheus() {
         <ChatInput onSend={handleSend} isLoading={isLoading} isListening={false} onToggleMic={() => {}} isSpeaking={isSpeaking} isLiveVoice={voiceLive.isLive} onToggleLive={() => voiceLive.isLive ? voiceLive.stop() : voiceLive.start()} />
       </div>
       {showSettings && <SettingsPanel
+        key={'settings-' + Date.now()}
         settings={settings}
         onUpdate={updateSettings}
         onClose={() => setShowSettings(false)}
