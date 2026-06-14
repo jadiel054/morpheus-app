@@ -33,6 +33,7 @@ import { SettingsPanel } from '../components/morpheus/SettingsPanel'
 import { ConversationHistory } from '../components/morpheus/ConversationHistory'
 import { DeployMonitor } from '../components/morpheus/DeployMonitor'
 import { ObservabilityPanel } from '../components/morpheus/ObservabilityPanel'
+import { AgentPlannerPanel } from '../components/morpheus/AgentPlannerPanel'
 
 const DEFAULT_TAB = { id: 'tab-1', title: 'Nova Conversa', messages: [] }
 
@@ -128,6 +129,133 @@ function resolveRepoFromMessage(text) {
   } catch { return null }
 }
 
+// Helper: resolve repo name from text + registry
+function resolveRepo(text, registry) {
+  if (!registry?.length) return null
+  const lower = text.toLowerCase()
+  for (const r of registry) {
+    const names = [r.name.toLowerCase(), r.name.toLowerCase().replace(/-/g, ' '), r.name.toLowerCase().replace(/-/g, ''), r.name.toLowerCase().split('-')[0]]
+    if (names.some(n => lower.includes(n))) return r.name
+  }
+  return null
+}
+
+// TAREFA 1: detectAndExecuteTool — roda ANTES do LLM
+async function detectAndExecuteTool(text, { setPlanSteps, updatePlanStep, setPlanVisible, setActiveToolCall }) {
+  const lower = text.toLowerCase()
+  const integrations = (() => { try { return JSON.parse(localStorage.getItem('morpheus_integrations') || '{}') } catch { return {} } })()
+  const settings = (() => { try { return JSON.parse(localStorage.getItem('morpheus_settings') || '{}') } catch { return {} } })()
+  const registry = (() => { try { return JSON.parse(localStorage.getItem('morpheus_repo_registry') || '[]') } catch { return [] } })()
+
+  const ghToken = integrations.github?.token || ''
+  const ghUser = integrations.github?.username || 'jadiel054'
+
+  // ---- LISTAR REPOS (check FIRST — more specific) ----
+  if (/list[aei]r?\s+(repo|reposit)|quais?\s+(s[aã]o|sao)\s+(meus?\s+)?(repo|reposit)/i.test(text)) {
+    setPlanSteps([{ id: '1', title: 'Conectar ao GitHub', status: 'running' },{ id: '2', title: 'Buscar repositorios', status: 'pending' },{ id: '3', title: 'Formatar lista', status: 'pending' }])
+    setPlanVisible(true)
+    setActiveToolCall({ name: 'github_list_repos', input: { user: ghUser }, status: 'running', result: null })
+    updatePlanStep('1', 'done')
+    updatePlanStep('2', 'running')
+    try {
+      const res = await fetch('https://api.github.com/user/repos?per_page=100&sort=updated', { headers: { Authorization: `Bearer ${ghToken}` } })
+      if (!res.ok) { updatePlanStep('2', 'failed'); setActiveToolCall(p => ({ ...p, status: 'failed', result: `HTTP ${res.status}` })); return `Erro GitHub: ${res.status}` }
+      const repos = await res.json()
+      updatePlanStep('2', 'done')
+      updatePlanStep('3', 'running')
+      const result = repos.slice(0, 20).map(r => `- **${r.name}** (${r.language || 'sem linguagem'}, ${r.private ? 'PRIVADO' : 'PUBLICO'}) — ${r.description || 'sem descricao'}`).join('\n')
+      updatePlanStep('3', 'done')
+      setActiveToolCall(p => ({ ...p, status: 'done', result: `${repos.length} repos encontrados` }))
+      setTimeout(() => setActiveToolCall(null), 2000)
+      return result
+    } catch(e) { updatePlanStep('2', 'failed'); setActiveToolCall(p => ({ ...p, status: 'failed', result: e.message })); return `Erro: ${e.message}` }
+  }
+
+  // ---- LER ARQUIVO ----
+  if (/l[eê]i[ao]?\s+|ler\s+|read\s+file|ver\s+(o\s+)?(arquivo|conteudo)/i.test(text)) {
+    const repo = resolveRepo(text, registry) || 'morpheus-app'
+    const fileMatch = text.match(/[\w\-\/]+\.[\w]+/)
+    const filePath = fileMatch ? fileMatch[0] : 'README.md'
+    setPlanSteps([{ id: '1', title: `Conectar ao repo ${repo}`, status: 'running' },{ id: '2', title: `Ler ${filePath}`, status: 'pending' },{ id: '3', title: 'Decodificar conteudo', status: 'pending' }])
+    setPlanVisible(true)
+    setActiveToolCall({ name: 'github_read_file', input: { repo, file: filePath }, status: 'running', result: null })
+    updatePlanStep('1', 'done')
+    updatePlanStep('2', 'running')
+    try {
+      const res = await fetch(`https://api.github.com/repos/${ghUser}/${repo}/contents/${filePath}`, { headers: { Authorization: `Bearer ${ghToken}` } })
+      if (!res.ok) { updatePlanStep('2', 'failed'); setActiveToolCall(p => ({ ...p, status: 'failed', result: `HTTP ${res.status}` })); return `Erro ao ler ${filePath}: ${res.status}` }
+      const data = await res.json()
+      updatePlanStep('2', 'done')
+      updatePlanStep('3', 'running')
+      let content = ''
+      try { content = atob(data.content.replace(/\n/g, '')) } catch { content = data.content }
+      updatePlanStep('3', 'done')
+      setActiveToolCall(p => ({ ...p, status: 'done', result: `${content.length} caracteres` }))
+      setTimeout(() => setActiveToolCall(null), 2000)
+      return `**Arquivo:** \`${filePath}\`\n**Repositorio:** ${repo}\n\n\`\`\`\n${content.slice(0, 3000)}\n\`\`\``
+    } catch(e) { updatePlanStep('2', 'failed'); setActiveToolCall(p => ({ ...p, status: 'failed', result: e.message })); return `Erro: ${e.message}` }
+  }
+
+  // ---- LISTAR ARQUIVOS ----
+  if (/list[aei]r?\s+(arquivo|files|estrutura|pasta|src|components|pages)|quais?\s+(s[aã]o|sao)\s+(os\s+)?(arquivo|files|estrutura)/i.test(text)) {
+    const repo = resolveRepo(text, registry) || 'morpheus-app'
+    const pathMatch = text.match(/pasta\s+(\S+)|(src|components|pages|lib|hooks|utils)/i)
+    const path = pathMatch ? (pathMatch[1] || pathMatch[2] || '') : ''
+    setPlanSteps([{ id: '1', title: `Acessar ${repo}`, status: 'running' },{ id: '2', title: `Listar ${path || 'raiz'}`, status: 'pending' }])
+    setPlanVisible(true)
+    setActiveToolCall({ name: 'github_list_files', input: { repo, path: path || '/' }, status: 'running', result: null })
+    updatePlanStep('1', 'done')
+    updatePlanStep('2', 'running')
+    try {
+      const res = await fetch(`https://api.github.com/repos/${ghUser}/${repo}/contents/${path}`, { headers: { Authorization: `Bearer ${ghToken}` } })
+      if (!res.ok) { updatePlanStep('2', 'failed'); setActiveToolCall(p => ({ ...p, status: 'failed', result: `HTTP ${res.status}` })); return `Erro: ${res.status}` }
+      const files = await res.json()
+      updatePlanStep('2', 'done')
+      const list = (Array.isArray(files) ? files : [files]).map(f => `${f.type === 'dir' ? 'FOLDER' : 'FILE'} \`${f.name}\``).join('\n')
+      setActiveToolCall(p => ({ ...p, status: 'done', result: `${(Array.isArray(files)?files:[files]).length} itens` }))
+      setTimeout(() => setActiveToolCall(null), 2000)
+      return `**Estrutura de** \`${repo}/${path}\`:\n\n${list}`
+    } catch(e) { updatePlanStep('2', 'failed'); setActiveToolCall(p => ({ ...p, status: 'failed', result: e.message })); return `Erro: ${e.message}` }
+  }
+
+  // ---- CLIMA ----
+  if (/(clima|temperatura|tempo\s+em|como\s+est[aá]\s+o\s+(tempo|clima))/i.test(text)) {
+    const cityMatch = text.match(/em\s+([A-ZÀ-Ú][a-zà-ú\s]+)/i)
+    const city = cityMatch?.[1]?.trim() || settings.preferred_city || 'Xanxere'
+    const apiKey = integrations.openweather?.key || ''
+    if (!apiKey) return 'Configure OpenWeather API key em Configuracoes → Integracoes'
+    setPlanSteps([{ id: '1', title: `Buscar clima: ${city}`, status: 'running' }])
+    setPlanVisible(true)
+    setActiveToolCall({ name: 'get_weather', input: { city }, status: 'running', result: null })
+    try {
+      const res = await fetch(`https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(city)}&appid=${apiKey}&units=metric&lang=pt_br`)
+      const data = await res.json()
+      updatePlanStep('1', res.ok ? 'done' : 'failed')
+      if (!res.ok) { setActiveToolCall(p => ({ ...p, status: 'failed', result: data.message })); return `Erro clima: ${data.message}` }
+      const result = `SUN **${city}:** ${Math.round(data.main.temp)}C — ${data.weather[0].description}\nSensacao: ${Math.round(data.main.feels_like)}C | Umidade: ${data.main.humidity}%`
+      setActiveToolCall(p => ({ ...p, status: 'done', result: `${Math.round(data.main.temp)}C` }))
+      setTimeout(() => setActiveToolCall(null), 2000)
+      return result
+    } catch(e) { updatePlanStep('1', 'failed'); setActiveToolCall(p => ({ ...p, status: 'failed', result: e.message })); return `Erro: ${e.message}` }
+  }
+
+  // ---- CALCULO ----
+  if (/(calcul|quanto\s+[eé]|\d+\s*[\+\-\*\/]\s*\d)/i.test(text)) {
+    const expr = text.match(/[\d\s\+\-\*\/\(\)\.]+/)?.[0]?.trim()
+    if (expr?.length > 2) {
+      try {
+        const result = Function(`'use strict'; return (${expr})`)()
+        setPlanSteps([{ id: '1', title: `Calcular: ${expr.trim()}`, status: 'done' }])
+        setPlanVisible(true)
+        setTimeout(() => { setPlanVisible(false); setPlanSteps([]) }, 2000)
+        return `CALC \`${expr.trim()} = **${result}**\``
+      } catch {}
+    }
+  }
+
+  return null
+}
+
 export default function Morpheus() {
   const { user, authState, signOut } = useAuth()
   const kokoro = useKokoroTTS()
@@ -149,6 +277,19 @@ export default function Morpheus() {
   const [showResetPassword, setShowResetPassword] = useState(
     () => localStorage.getItem('morpheus_password_recovery') === 'true'
   )
+
+  // TAREFA 2: Planejador visual estilo Manus
+  const [planSteps, setPlanSteps] = useState([])
+  const [planVisible, setPlanVisible] = useState(false)
+  const [activeToolCall, setActiveToolCall] = useState(null)
+
+  function updatePlanStep(id, status) {
+    setPlanSteps(prev => prev.map(s => s.id === id ? { ...s, status } : s))
+  }
+
+  function clearPlan() {
+    setTimeout(() => { setPlanVisible(false); setPlanSteps([]) }, 2000)
+  }
 
   const [settings, setSettings] = useState(() => {
     try { return JSON.parse(localStorage.getItem('morpheus_settings')) || def() } catch { return def() }
@@ -379,9 +520,55 @@ export default function Morpheus() {
     })
 
     setIsLoading(true)
+
+    // TAREFA 1: Tentar executar tool direta ANTES do LLM
+    const toolResult = await detectAndExecuteTool(text, { setPlanSteps, updatePlanStep, setPlanVisible, setActiveToolCall })
+
+    if (toolResult !== null) {
+      // Tool executou — LLM so formata a resposta
+      addStep('Formatando resposta...')
+      try {
+        const stored = (() => { try { return JSON.parse(localStorage.getItem('morpheus_settings') || '{}') } catch { return {} } })()
+        const integrations = (() => { try { return JSON.parse(localStorage.getItem('morpheus_integrations') || '{}') } catch { return {} } })()
+        const groqKey = integrations.groq?.key || stored.groq_api_key || ''
+        const isValidKey = (k) => k && k.length > 10 && k !== 'sk-...'
+
+        let formatted = `**Resultado:**\n\n${toolResult}`
+        if (isValidKey(groqKey)) {
+          try {
+            const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${groqKey}` },
+              body: JSON.stringify({ model: 'llama-3.3-70b-versatile', messages: [{ role: 'system', content: 'Voce e MORPHEUS. Apresente dados de forma clara e organizada em portugues. Use bullets e emojis.' }, { role: 'user', content: `O usuario pediu: "${text}"\n\nDados obtidos:\n${toolResult}\n\nApresente estes dados de forma clara, organizada e util em portugues.` }], max_tokens: 1024, temperature: 0.7 })
+            })
+            if (res.ok) {
+              const d = await res.json()
+              formatted = d.choices?.[0]?.message?.content || formatted
+            }
+          } catch {}
+        }
+
+        completeLastStep('Resposta pronta')
+        const assistantMsg = { role: 'assistant', content: formatted, timestamp: Date.now(), model: 'groq/llama-3.3-70b' }
+        updateActiveTab(tab => {
+          const updated = { ...tab, messages: [...tab.messages, assistantMsg] }
+          if (user) saveConversation(updated)
+          return updated
+        })
+      } catch (err) {
+        const errMsg = { role: 'assistant', content: 'Erro: ' + (err.message || 'Falha desconhecida'), timestamp: Date.now(), model: 'error' }
+        updateActiveTab(tab => ({ ...tab, messages: [...tab.messages, errMsg] }))
+      } finally {
+        setIsLoading(false)
+        clearSteps()
+        clearPlan()
+      }
+      return
+    }
+
+    // STEP 2: Resposta normal do LLM (fluxo original)
     addStep('Analisando mensagem...')
 
-    // Task 2.3: Resolve repositorio mencionado no texto
     const mentionedRepo = resolveRepoFromMessage(text)
     if (mentionedRepo) {
       addStep('Repo detectado: ' + mentionedRepo.name)
@@ -390,7 +577,6 @@ export default function Morpheus() {
     try {
       const updatedMemory = processAndSaveMemory(text, user?.id || 'local', memory)
       setMemory(updatedMemory)
-      // Salva no Supabase tambem
       if (user) saveMemoryToSupabase(user.id, updatedMemory.facts, supabase)
       const memoryPrompt = buildMemoryPrompt(updatedMemory)
 
@@ -425,7 +611,6 @@ export default function Morpheus() {
       const assistantMsg = { role: 'assistant', content: result.content, timestamp: Date.now(), model: result.model }
       updateActiveTab(tab => {
         const updated = { ...tab, messages: [...tab.messages, assistantMsg] }
-        // Salva no Supabase apos cada resposta
         saveConversation(updated)
         return updated
       })
@@ -470,6 +655,16 @@ export default function Morpheus() {
             />
           : activeTab.messages.map((msg, i) => <MessageBubble key={i} message={msg} isSpeaking={isSpeaking} onSpeak={handleSpeak} onRegenerate={handleRegenerate} />)
         }
+        {/* Planejador visual — aparece durante execucao de tools */}
+        {planVisible && (
+          <AgentPlannerPanel
+            steps={planSteps}
+            activeToolCall={activeToolCall}
+            visible={planVisible}
+          />
+        )}
+        {/* Loading indicator normal */}
+        {isLoading && !planVisible && <ThinkingStatus steps={thinkingSteps} isLoading={isLoading} />}
         <ThinkingStatus steps={thinkingSteps} isLoading={isLoading} />
         <div ref={messagesEndRef} />
       </div>
