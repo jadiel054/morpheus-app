@@ -12,8 +12,8 @@ export function ResetPasswordModal({ onClose }) {
     const { error } = await supabase.auth.updateUser({ password: newPassword })
     if (error) { setStatus('Erro: ' + error.message); return }
     setStatus('Senha alterada com sucesso!')
+    localStorage.removeItem('morpheus_password_recovery')
     setTimeout(() => {
-      localStorage.removeItem('morpheus_password_recovery')
       onClose()
     }, 2000)
   }

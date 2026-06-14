@@ -32,6 +32,13 @@ export function AuthProvider({ children }) {
         if (event === 'PASSWORD_RECOVERY') {
           localStorage.setItem('morpheus_password_recovery', 'true')
         }
+        if (event === 'SIGNED_IN') {
+          // Se o usuario acabou de redefinir a senha, limpa a flag
+          // (a limpeza definitiva acontece no ResetPasswordModal apos sucesso)
+          if (localStorage.getItem('morpheus_password_recovery') === 'true') {
+            // Mantem a flag ate o modal de reset ser usado
+          }
+        }
         setSession(s)
         setUser(s?.user ?? null)
         setAuthState(s ? 'authenticated' : 'unauthenticated')

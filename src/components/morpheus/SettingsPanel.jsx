@@ -32,24 +32,16 @@ export function SettingsPanel({ settings, onUpdate, onClose }) {
   const { user } = useAuth()
   const kokoroHook = useKokoroTTS()
   const [activeTab, setActiveTab] = useState('Perfil')
-  const [saved, setSaved] = useState(false)
+  const [saveStatus, setSaveStatus] = useState('')
   const [testingVoice, setTestingVoice] = useState(false)
   const [localSettings, setLocalSettings] = useState(() => {
-    // Carrega do localStorage ao abrir, com fallback para os defaults
     try {
       const stored = JSON.parse(localStorage.getItem('morpheus_settings') || '{}')
       return {
-        assistant_name: 'MORPHEUS',
-        user_name: 'Jadiel',
-        preferred_city: 'Xanxere/SC',
-        language: 'pt-BR',
-        tts_engine: 'kokoro',
-        kokoro_voice: 'af_nicole',
-        voice_speed: 1.0,
-        ai_model: 'auto',
-        sarcasm_level: 30,
-        ...stored,
-        ...settings,
+        assistant_name: 'MORPHEUS', user_name: 'Jadiel', preferred_city: 'Xanxere/SC',
+        language: 'pt-BR', tts_engine: 'kokoro', kokoro_voice: 'af_nicole',
+        voice_speed: 1.0, ai_model: 'auto', sarcasm_level: 30,
+        ...stored, ...settings,
       }
     } catch {
       return {
@@ -63,30 +55,30 @@ export function SettingsPanel({ settings, onUpdate, onClose }) {
   const updateLocal = (patch) => {
     setLocalSettings(prev => {
       const next = { ...prev, ...patch }
-      // Salva imediatamente no localStorage
       localStorage.setItem('morpheus_settings', JSON.stringify(next))
       return next
     })
     onUpdate(patch)
   }
 
+  // Bug 1.4: Feedback diferenciado (salvo localmente vs sincronizado)
   const handleSave = async () => {
-    // Garante que settings e integrations estao persistidos
     localStorage.setItem('morpheus_settings', JSON.stringify(localSettings))
-    // integrations ja foram salvas pelo IntegrationField ao digitar
+    let syncedToCloud = false
     if (user) {
       try {
-        await supabase.from('user_settings').upsert({
+        const { error } = await supabase.from('user_settings').upsert({
           id: user.id,
           user_name: localSettings.user_name,
           user_email: user.email,
           preferred_city: localSettings.preferred_city,
           updated_at: new Date().toISOString(),
         })
+        if (!error) syncedToCloud = true
       } catch {}
     }
-    setSaved(true)
-    setTimeout(() => setSaved(false), 2000)
+    setSaveStatus(syncedToCloud ? 'SALVO E SINCRONIZADO' : 'SALVO LOCALMENTE')
+    setTimeout(() => setSaveStatus(''), 3000)
   }
 
   const handleTestVoice = async () => {
@@ -117,10 +109,7 @@ export function SettingsPanel({ settings, onUpdate, onClose }) {
             <div><label className="text-xs opacity-60">Idioma</label><select className="w-full bg-dark-bg border border-dark-border rounded px-3 py-2 text-sm text-cyan mt-1 font-mono" value={localSettings.language || 'pt-BR'} onChange={e => updateLocal({ language: e.target.value })}><option value="pt-BR">Portugues (BR)</option><option value="en-US">English (US)</option></select></div>
           </div>}
           {activeTab === 'Voz' && <div className="space-y-4">
-            <KokoroDownloadManager
-              onDownloadComplete={() => {}}
-              onSkip={() => {}}
-            />
+            <KokoroDownloadManager onDownloadComplete={() => {}} onSkip={() => {}} />
             <div><label className="text-xs opacity-60">Motor TTS</label><select className="w-full bg-dark-bg border border-dark-border rounded px-3 py-2 text-sm text-cyan mt-1 font-mono" value={localSettings.tts_engine || 'kokoro'} onChange={e => updateLocal({ tts_engine: e.target.value })}>
               <option value="kokoro">Kokoro (Local/Gratuito)</option>
               <option value="elevenlabs">ElevenLabs (Premium)</option>
@@ -147,8 +136,7 @@ export function SettingsPanel({ settings, onUpdate, onClose }) {
                 background: testingVoice ? 'rgba(0,255,255,0.15)' : 'transparent',
                 border: '1px solid rgba(0,255,255,0.3)', borderRadius: '8px',
                 color: '#00FFFF', fontFamily: 'monospace', fontSize: '13px',
-                cursor: testingVoice ? 'not-allowed' : 'pointer',
-                letterSpacing: '1px',
+                cursor: testingVoice ? 'not-allowed' : 'pointer', letterSpacing: '1px',
               }}>
                 {testingVoice ? 'TOCANDO...' : 'TESTAR VOZ'}
               </button>
@@ -176,6 +164,32 @@ export function SettingsPanel({ settings, onUpdate, onClose }) {
             <IntegrationSection title="GITHUB">
               <IntegrationField label="GitHub Token (PAT)" placeholder="ghp_..." storeKey="github.token"
                 testFn={async (k) => { try { const r = await fetch('https://api.github.com/user', { headers: { Authorization: `Bearer ${k}` } }); return r.ok } catch { return false } }}
+                onTokenSaved={async (token) => {
+                  // Bug 2.1: Auto-discovery de repos ao salvar token
+                  if (!token || token.length < 10) return
+                  try {
+                    const [reposRes, userRes] = await Promise.all([
+                      fetch('https://api.github.com/user/repos?per_page=100&sort=updated', { headers: { Authorization: `Bearer ${token}` } }),
+                      fetch('https://api.github.com/user', { headers: { Authorization: `Bearer ${token}` } })
+                    ])
+                    if (reposRes.ok) {
+                      const repos = await reposRes.json()
+                      const repoNames = repos.map(r => r.name).join(', ')
+                      const stored = JSON.parse(localStorage.getItem('morpheus_integrations') || '{}')
+                      stored.github = { ...stored.github, repos: repoNames }
+                      localStorage.setItem('morpheus_integrations', JSON.stringify(stored))
+                      // Salva registry
+                      const registry = repos.map(r => ({ name: r.name, full_name: r.full_name, url: r.html_url, private: r.private, language: r.language, updated: r.updated_at, description: r.description }))
+                      localStorage.setItem('morpheus_repo_registry', JSON.stringify(registry))
+                    }
+                    if (userRes.ok) {
+                      const userData = await userRes.json()
+                      const stored = JSON.parse(localStorage.getItem('morpheus_integrations') || '{}')
+                      stored.github = { ...stored.github, username: userData.login }
+                      localStorage.setItem('morpheus_integrations', JSON.stringify(stored))
+                    }
+                  } catch (err) { console.error('[GitHub] Erro ao buscar repos:', err) }
+                }}
               />
               <IntegrationField label="GitHub Username" placeholder="jadiel054" storeKey="github.username" noTest />
               <IntegrationField label="Repositorios (separados por virgula)" placeholder="morpheus-app, zarith-saas-web, vitabot" storeKey="github.repos" noTest />
@@ -204,13 +218,20 @@ export function SettingsPanel({ settings, onUpdate, onClose }) {
               <IntegrationField label="Supabase Service Role Key (opcional)" placeholder="eyJ..." storeKey="supabase.serviceKey" noTest />
             </IntegrationSection>
 
-            {/* Telegram 10 bots */}
+            {/* Telegram 10 bots — Bug 1.1: estrutura unificada com token + chatId */}
             <IntegrationSection title="TELEGRAM — 10 BOTS">
-              {['MorpheusComando','MorpheusAlerts','MorpheusDev','MorpheusDebugger','MorpheusAnalytics','MorpheusOps','MorpheusArchitect','MorpheusAuditor','MorpheusTrainer','MorpheusMemory'].map(botName => (
-                <IntegrationField key={botName} label={botName} placeholder="123456:ABC-xxx" storeKey={`telegram.${botName.toLowerCase()}`}
-                  testFn={async (token) => { try { const r = await fetch(`https://api.telegram.org/bot${token}/getMe`); const data = await r.json(); return data.ok } catch { return false } }}
-                />
-              ))}
+              {['MorpheusComando','MorpheusAlerts','MorpheusDev','MorpheusDebugger','MorpheusAnalytics','MorpheusOps','MorpheusArchitect','MorpheusAuditor','MorpheusTrainer','MorpheusMemory'].map(botName => {
+                const key = botName.toLowerCase()
+                return (
+                  <div key={botName} style={{ marginBottom: '14px', padding: '10px', background: 'rgba(0,255,255,0.03)', borderRadius: '8px', border: '1px solid rgba(0,255,255,0.08)' }}>
+                    <div style={{ color: 'rgba(0,255,255,0.6)', fontSize: '11px', letterSpacing: '1px', marginBottom: '8px' }}>{botName}</div>
+                    <IntegrationField label="Token" placeholder="123456:ABC-xxx" storeKey={`telegram.${key}.token`}
+                      testFn={async (token) => { try { const r = await fetch(`https://api.telegram.org/bot${token}/getMe`); const data = await r.json(); return data.ok } catch { return false } }}
+                    />
+                    <IntegrationField label="Chat ID" placeholder="-1001234567890" storeKey={`telegram.${key}.chatId`} noTest />
+                  </div>
+                )
+              })}
             </IntegrationSection>
 
             {/* Outros servicos */}
@@ -235,29 +256,19 @@ export function SettingsPanel({ settings, onUpdate, onClose }) {
           {activeTab === 'Seguranca' && <SegurancaTab user={user} settings={localSettings} updateLocal={updateLocal} />}
         </div>
 
-        <div style={{
-          borderTop: '1px solid #0d2030',
-          padding: '16px 24px',
-          display: 'flex',
-          gap: '12px',
-          background: '#0a1520',
-        }}>
+        <div style={{ borderTop: '1px solid #0d2030', padding: '16px 24px', display: 'flex', gap: '12px', background: '#0a1520' }}>
           <button onClick={handleSave} style={{
             flex: 1, padding: '12px',
-            background: saved ? 'rgba(0,255,255,0.3)' : '#00FFFF',
-            color: '#050a0f',
-            border: 'none', borderRadius: '8px',
-            fontFamily: 'monospace', fontWeight: '700',
-            fontSize: '13px', letterSpacing: '1px', cursor: 'pointer',
+            background: saveStatus ? 'rgba(0,255,255,0.3)' : '#00FFFF',
+            color: '#050a0f', border: 'none', borderRadius: '8px',
+            fontFamily: 'monospace', fontWeight: '700', fontSize: '13px', letterSpacing: '1px', cursor: 'pointer',
           }}>
-            {saved ? 'SALVO!' : 'SALVAR'}
+            {saveStatus || 'SALVAR'}
           </button>
           <button onClick={onClose} style={{
-            padding: '12px 20px',
-            background: 'transparent',
-            border: '1px solid rgba(0,255,255,0.2)',
-            borderRadius: '8px', color: 'rgba(0,255,255,0.6)',
-            fontFamily: 'monospace', fontSize: '13px', cursor: 'pointer',
+            padding: '12px 20px', background: 'transparent',
+            border: '1px solid rgba(0,255,255,0.2)', borderRadius: '8px',
+            color: 'rgba(0,255,255,0.6)', fontFamily: 'monospace', fontSize: '13px', cursor: 'pointer',
           }}>
             FECHAR
           </button>
@@ -307,7 +318,6 @@ function SegurancaTab({ user, settings, updateLocal }) {
     if (!confirm1) return
     const confirm2 = window.prompt('Digite DELETE para confirmar:')
     if (confirm2 !== 'DELETE') return
-
     try {
       await supabase.from('conversations').delete().eq('user_id', user.id)
       await supabase.from('morpheus_memory').delete().eq('user_id', user.id)
@@ -328,7 +338,6 @@ function SegurancaTab({ user, settings, updateLocal }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-      {/* PIN de emergencia */}
       <div style={sectionStyle}>
         <div style={titleStyle}>PIN DE EMERGENCIA</div>
         <div style={{ display: 'flex', gap: '8px' }}>
@@ -338,8 +347,6 @@ function SegurancaTab({ user, settings, updateLocal }) {
           <button onClick={savePin} style={actionBtnStyle}>Salvar PIN</button>
         </div>
       </div>
-
-      {/* Redefinir senha */}
       <div style={sectionStyle}>
         <div style={titleStyle}>REDEFINIR SENHA</div>
         <p style={descStyle}>Enviar link de redefinicao para o email da conta.</p>
@@ -348,41 +355,22 @@ function SegurancaTab({ user, settings, updateLocal }) {
         </button>
         {resetMsg && <p style={{ color: '#00FFFF', fontSize: '12px', fontFamily: 'monospace', marginTop: '8px' }}>{resetMsg}</p>}
       </div>
-
-      {/* Confirmacao de email */}
       <div style={sectionStyle}>
         <div style={titleStyle}>CONFIRMACAO DE EMAIL</div>
-        <p style={descStyle}>
-          Status: {emailConfirmed ? 'Email confirmado' : 'Email nao confirmado'}
-        </p>
+        <p style={descStyle}>Status: {emailConfirmed ? 'Email confirmado' : 'Email nao confirmado'}</p>
         {!emailConfirmed && (
-          <button onClick={handleResendConfirmation} style={actionBtnStyle}>
-            Reenviar confirmacao
-          </button>
+          <button onClick={handleResendConfirmation} style={actionBtnStyle}>Reenviar confirmacao</button>
         )}
       </div>
-
-      {/* Notificacoes de seguranca */}
       <div style={sectionStyle}>
         <div style={titleStyle}>NOTIFICACOES DE SEGURANCA</div>
-        <ToggleRow label="Alertas por email (novo dispositivo, login suspeito)"
-          value={settings.security_email_alerts}
-          onChange={v => updateLocal({ security_email_alerts: v })} />
-        <ToggleRow label="Alertas por WhatsApp/SMS"
-          value={settings.security_sms_alerts}
-          onChange={v => updateLocal({ security_sms_alerts: v })} />
+        <ToggleRow label="Alertas por email (novo dispositivo, login suspeito)" value={settings.security_email_alerts} onChange={v => updateLocal({ security_email_alerts: v })} />
+        <ToggleRow label="Alertas por WhatsApp/SMS" value={settings.security_sms_alerts} onChange={v => updateLocal({ security_sms_alerts: v })} />
         <p style={descStyle}>Configure o email e telefone na aba Integracoes > Outros Servicos.</p>
       </div>
-
-      {/* Zona de perigo */}
       <div style={sectionStyle}>
         <div style={{ ...titleStyle, color: 'rgba(255,0,128,0.6)', borderBottomColor: 'rgba(255,0,128,0.2)' }}>ZONA DE PERIGO</div>
-        <button onClick={handleDeleteAccount} style={{
-          ...actionBtnStyle,
-          background: 'rgba(255,0,128,0.1)',
-          border: '1px solid rgba(255,0,128,0.3)',
-          color: '#ff0080',
-        }}>
+        <button onClick={handleDeleteAccount} style={{ ...actionBtnStyle, background: 'rgba(255,0,128,0.1)', border: '1px solid rgba(255,0,128,0.3)', color: '#ff0080' }}>
           Excluir conta permanentemente
         </button>
       </div>
@@ -396,16 +384,9 @@ function ToggleRow({ label, value, onChange }) {
       <span style={{ color: 'rgba(0,255,255,0.6)', fontSize: '11px', fontFamily: 'monospace' }}>{label}</span>
       <button onClick={() => onChange(!value)} style={{
         width: '44px', height: '24px', borderRadius: '12px', border: 'none',
-        background: value ? '#00FFFF' : 'rgba(0,255,255,0.15)',
-        cursor: 'pointer', position: 'relative', transition: 'background 0.2s',
+        background: value ? '#00FFFF' : 'rgba(0,255,255,0.15)', cursor: 'pointer', position: 'relative', transition: 'background 0.2s',
       }}>
-        <div style={{
-          width: '18px', height: '18px', borderRadius: '50%',
-          background: value ? '#050a0f' : 'rgba(0,255,255,0.5)',
-          position: 'absolute', top: '3px',
-          left: value ? '23px' : '3px',
-          transition: 'left 0.2s',
-        }}/>
+        <div style={{ width: '18px', height: '18px', borderRadius: '50%', background: value ? '#050a0f' : 'rgba(0,255,255,0.5)', position: 'absolute', top: '3px', left: value ? '23px' : '3px', transition: 'left 0.2s' }}/>
       </button>
     </div>
   )
@@ -414,12 +395,7 @@ function ToggleRow({ label, value, onChange }) {
 function IntegrationSection({ title, children }) {
   return (
     <div style={{ marginBottom: '24px' }}>
-      <div style={{
-        color: 'rgba(0,255,255,0.4)', fontSize: '10px',
-        letterSpacing: '3px', marginBottom: '12px',
-        borderBottom: '1px solid rgba(0,255,255,0.1)',
-        paddingBottom: '6px',
-      }}>
+      <div style={{ color: 'rgba(0,255,255,0.4)', fontSize: '10px', letterSpacing: '3px', marginBottom: '12px', borderBottom: '1px solid rgba(0,255,255,0.1)', paddingBottom: '6px' }}>
         {title}
       </div>
       {children}
@@ -427,28 +403,23 @@ function IntegrationSection({ title, children }) {
   )
 }
 
-// Helper to get a nested value using dot-path
 function getNestedLocal(obj, path) {
   return path.split('.').reduce((o, k) => (o && o[k] !== undefined) ? o[k] : '', obj)
 }
 
-// Helper to set a nested value, returning a new object
 function setNestedLocal(obj, path, value) {
   const keys = path.split('.')
   const result = JSON.parse(JSON.stringify(obj))
   let current = result
   for (let i = 0; i < keys.length - 1; i++) {
-    if (!current[keys[i]] || typeof current[keys[i]] !== 'object') {
-      current[keys[i]] = {}
-    }
+    if (!current[keys[i]] || typeof current[keys[i]] !== 'object') { current[keys[i]] = {} }
     current = current[keys[i]]
   }
   current[keys[keys.length - 1]] = value
   return result
 }
 
-function IntegrationField({ label, placeholder, storeKey, testFn, noTest }) {
-  // storeKey agora usa dot-notation: "github.token", "vercel.token", "groq.key"
+function IntegrationField({ label, placeholder, storeKey, testFn, noTest, onTokenSaved }) {
   const [value, setValue] = useState(() => {
     try {
       const stored = JSON.parse(localStorage.getItem('morpheus_integrations') || '{}')
@@ -470,11 +441,14 @@ function IntegrationField({ label, placeholder, storeKey, testFn, noTest }) {
   const handleChange = (e) => {
     const newVal = e.target.value
     setValue(newVal)
-    // Salva imediatamente no localStorage com estrutura aninhada
     try {
       const stored = JSON.parse(localStorage.getItem('morpheus_integrations') || '{}')
       const updated = setNestedLocal(stored, storeKey, newVal)
       localStorage.setItem('morpheus_integrations', JSON.stringify(updated))
+      // Bug 2.1: Auto-discovery ao salvar GitHub token
+      if (onTokenSaved && storeKey === 'github.token') {
+        onTokenSaved(newVal)
+      }
     } catch (err) {
       console.error('[IntegrationField] Erro ao salvar:', err)
     }
@@ -482,30 +456,18 @@ function IntegrationField({ label, placeholder, storeKey, testFn, noTest }) {
 
   return (
     <div style={{ marginBottom: '12px' }}>
-      <div style={{ color: 'rgba(0,255,255,0.6)', fontSize: '11px',
-        letterSpacing: '1px', marginBottom: '6px' }}>
-        {label}
-      </div>
+      <div style={{ color: 'rgba(0,255,255,0.6)', fontSize: '11px', letterSpacing: '1px', marginBottom: '6px' }}>{label}</div>
       <div style={{ display: 'flex', gap: '8px' }}>
         <input
           type={storeKey.includes('key') || storeKey.includes('token') || storeKey.includes('Key') ? 'password' : 'text'}
-          value={value}
-          onChange={handleChange}
-          placeholder={placeholder}
-          style={{
-            flex: 1, background: '#050a0f',
-            border: '1px solid #0d2030', borderRadius: '8px',
-            padding: '10px 12px', color: '#e2e8f0',
-            fontFamily: 'monospace', fontSize: '13px', outline: 'none',
-          }}
+          value={value} onChange={handleChange} placeholder={placeholder}
+          style={{ flex: 1, background: '#050a0f', border: '1px solid #0d2030', borderRadius: '8px', padding: '10px 12px', color: '#e2e8f0', fontFamily: 'monospace', fontSize: '13px', outline: 'none' }}
         />
         {!noTest && (
           <button onClick={handleTest} style={{
-            padding: '10px 12px', background: 'transparent',
-            border: '1px solid rgba(0,255,255,0.2)', borderRadius: '8px',
+            padding: '10px 12px', background: 'transparent', border: '1px solid rgba(0,255,255,0.2)', borderRadius: '8px',
             color: testStatus === 'OK' ? '#00FFFF' : testStatus === 'Invalida' ? '#ff0080' : 'rgba(0,255,255,0.6)',
-            fontFamily: 'monospace', fontSize: '11px',
-            cursor: 'pointer', whiteSpace: 'nowrap', minWidth: '70px',
+            fontFamily: 'monospace', fontSize: '11px', cursor: 'pointer', whiteSpace: 'nowrap', minWidth: '70px',
           }}>
             {testStatus || 'TESTAR'}
           </button>

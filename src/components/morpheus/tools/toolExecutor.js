@@ -226,7 +226,7 @@ export async function scan_url({ url }) {
 export async function get_weather({ city, units }) {
   try {
     const i = JSON.parse(localStorage.getItem('morpheus_integrations') || '{}')
-    const key = i.openweather?.apiKey || process.env.OPENWEATHER_API_KEY
+    const key = i.openweather?.key || ''
     if (!key) return { error: 'OpenWeather API key nao configurada' }
     const r = await fetch('https://api.openweathermap.org/data/2.5/weather?q=' + encodeURIComponent(city) + '&units=' + (units || 'metric') + '&appid=' + key + '&lang=pt')
     if (!r.ok) return { error: 'Weather API error: ' + r.status }

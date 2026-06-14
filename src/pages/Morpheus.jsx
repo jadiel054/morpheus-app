@@ -36,6 +36,98 @@ import { ObservabilityPanel } from '../components/morpheus/ObservabilityPanel'
 
 const DEFAULT_TAB = { id: 'tab-1', title: 'Nova Conversa', messages: [] }
 
+// Bug 1.5: Migracao de chaves antigas (flat -> nested)
+function migrateOldKeys() {
+  try {
+    const migrated = localStorage.getItem('morpheus_keys_migrated')
+    if (migrated) return
+    const old = JSON.parse(localStorage.getItem('morpheus_integrations') || '{}')
+    let changed = false
+    // Mapeia chaves flat antigas para a nova estrutura aninhada
+    const migrations = {
+      'groq_key': 'groq.key',
+      'openrouter_key': 'openrouter.key',
+      'deepseek_key': 'deepseek.key',
+      'gemini_key': 'gemini.key',
+      'openai_key': 'openai.key',
+      'claude_key': 'claude.key',
+      'github_token': 'github.token',
+      'github_username': 'github.username',
+      'github_repos': 'github.repos',
+      'vercel_token': 'vercel.token',
+      'vercel_project_id': 'vercel.projectId',
+      'vercel_team_id': 'vercel.teamId',
+      'supabase_url': 'supabase.url',
+      'supabase_anon_key': 'supabase.anonKey',
+      'supabase_service_key': 'supabase.serviceKey',
+      'brave_key': 'brave.api_key',
+      'openweather_key': 'openweather.key',
+      'elevenlabs_key': 'elevenlabs.key',
+      'resend_key': 'resend.key',
+      'alert_email': 'alerts.email',
+      'alert_phone': 'alerts.phone',
+    }
+    for (const [oldKey, newPath] of Object.entries(migrations)) {
+      if (old[oldKey] && !getNestedLocal(old, newPath)) {
+        old[newPath] = old[oldKey]
+        delete old[oldKey]
+        changed = true
+      }
+    }
+    if (changed) {
+      localStorage.setItem('morpheus_integrations', JSON.stringify(old))
+      console.log('[MORPHEUS] Chaves migradas do formato flat para aninhado')
+    }
+    localStorage.setItem('morpheus_keys_migrated', 'true')
+  } catch (e) { console.warn('[MORPHEUS] Erro na migracao:', e) }
+}
+
+function getNestedLocal(obj, path) {
+  return path.split('.').reduce((o, k) => (o && o[k] !== undefined) ? o[k] : '', obj)
+}
+
+// Task 2.2: Sincroniza registry de repos em background
+async function syncRepoRegistry() {
+  try {
+    const i = JSON.parse(localStorage.getItem('morpheus_integrations') || '{}')
+    const token = i.github?.token
+    if (!token) return
+    const res = await fetch('https://api.github.com/user/repos?per_page=100&sort=updated', {
+      headers: { Authorization: `Bearer ${token}` }
+    })
+    if (!res.ok) return
+    const repos = await res.json()
+    const registry = repos.map(r => ({
+      name: r.name, full_name: r.full_name, url: r.html_url,
+      private: r.private, language: r.language, updated: r.updated_at,
+      description: r.description,
+    }))
+    localStorage.setItem('morpheus_repo_registry', JSON.stringify(registry))
+    console.log(`[MORPHEUS] Registry sincronizado: ${registry.length} repos`)
+  } catch (e) { console.warn('[MORPHEUS] Falha ao sincronizar registry:', e) }
+}
+
+// Task 2.3: Resolve repositorio mencionado no texto
+function resolveRepoFromMessage(text) {
+  try {
+    const registry = JSON.parse(localStorage.getItem('morpheus_repo_registry') || '[]')
+    if (!registry.length) return null
+    for (const repo of registry) {
+      const patterns = [
+        repo.name.toLowerCase(),
+        repo.name.toLowerCase().replace(/-/g, ' '),
+        repo.name.toLowerCase().split('-')[0],
+      ]
+      for (const pattern of patterns) {
+        if (pattern.length > 2 && text.toLowerCase().includes(pattern)) {
+          return repo
+        }
+      }
+    }
+    return null
+  } catch { return null }
+}
+
 export default function Morpheus() {
   const { user, authState, signOut } = useAuth()
   const kokoro = useKokoroTTS()
@@ -124,6 +216,14 @@ export default function Morpheus() {
         })
         .catch(() => {})
     }
+  }, [user])
+
+  // Bug 1.5: Migracao de chaves antigas ao iniciar
+  useEffect(() => { migrateOldKeys() }, [])
+
+  // Task 2.2: Sincroniza repo registry ao iniciar (background)
+  useEffect(() => {
+    if (user) { syncRepoRegistry() }
   }, [user])
 
   const updateSettings = useCallback((patch) => {
@@ -274,6 +374,12 @@ export default function Morpheus() {
 
     setIsLoading(true)
     addStep('Analisando mensagem...')
+
+    // Task 2.3: Resolve repositorio mencionado no texto
+    const mentionedRepo = resolveRepoFromMessage(text)
+    if (mentionedRepo) {
+      addStep('Repo detectado: ' + mentionedRepo.name)
+    }
 
     try {
       const updatedMemory = processAndSaveMemory(text, user?.id || 'local', memory)
