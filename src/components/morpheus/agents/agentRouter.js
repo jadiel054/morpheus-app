@@ -9,6 +9,8 @@ export function routeToAgent(message) {
     { key: 'devMobile', name: 'Agente Dev Mobile', triggers: ['apk','flutter','react native','expo','android'] },
     { key: 'frontend', name: 'Agente Frontend', triggers: ['css','layout','tailwind','ui','ux','componente'] },
     { key: 'backend', name: 'Agente Backend', triggers: ['api','servidor','banco de dados','endpoint','express','supabase'] },
+    { key: 'botManager', name: 'Agente Bot Manager', triggers: ['telegram','bot telegram','broadcast','mensagem automatica','orquestrar bots'] },
+    { key: 'systemBuilder', name: 'Agente System Builder', triggers: ['criar sistema','gerar sistema','construir sistema','site completo','app saas'] },
     { key: 'weather', name: 'Agente Clima', triggers: ['temperatura','chuva','previsao','meteorologia','clima'] },
     { key: 'analyst', name: 'Analista Estrategico', triggers: ['analisar repo','planejar','delegar zarith','estrategia'] },
   ]

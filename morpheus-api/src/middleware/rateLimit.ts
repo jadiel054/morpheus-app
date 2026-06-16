@@ -10,3 +10,5 @@ export function rateLimit(maxRequests = 60, windowMs = 60000) {
     next()
   }
 }
+
+export const rateLimitMiddleware = rateLimit()

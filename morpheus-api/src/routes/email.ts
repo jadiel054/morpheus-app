@@ -32,7 +32,7 @@ router.post('/alert', authenticate, async (req, res) => {
     if (!rsRes.ok) throw new Error(data.message || rsRes.status)
     res.json({ ok: true, id: data.id })
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message })
+    res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) })
   }
 })
 
@@ -67,7 +67,7 @@ router.post('/security-alert', authenticate, async (req, res) => {
     if (!rsRes.ok) throw new Error(data.message || rsRes.status)
     res.json({ ok: true, id: data.id })
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message })
+    res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) })
   }
 })
 

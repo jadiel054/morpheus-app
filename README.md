@@ -1,8 +1,10 @@
-# MORPHEUS — Nebuchadnezzar v1.0
+# MORPHEUS — Nebuchadnezzar v2.0
 
 **Modular Orchestration & Reasoning Platform for Highly Efficient Unified Systems**
 
 Assistente pessoal de IA de nível enterprise — SPA React + Backend Express/Node.js + Supabase.
+
+Versão atualizada com health check real do backend, validação de tools com Zod, circuit breaker por tool, planner/reflector persistentes e roteamento de modelos com fallback.
 
 ## Stack
 
@@ -24,6 +26,26 @@ Assistente pessoal de IA de nível enterprise — SPA React + Backend Express/No
 | Email | Resend API |
 | Deploy Frontend | Vercel |
 | Deploy Backend | Render |
+
+## v2.0
+
+- `render.yaml` adicionado na raiz para deploy do backend no Render
+- `morpheus-api/src/routes/health.ts` criado com verificações reais de Supabase, Groq, GitHub, Vercel e OpenRouter
+- `src/components/morpheus/tools/toolExecutor.js` atualizado com validação de parâmetros via `zod` e wrapper de circuit breaker
+- política de autonomia adicionada para branch temporária, PR e contenção de ações sensíveis
+- `src/lib/circuitBreaker.js` e `morpheus-api/src/lib/circuitBreaker.ts` adicionados para controle de falhas por tool
+- Engines `planner` e `reflector` criadas no frontend e no backend, com persistência em Supabase
+- `modelRouter` e `prompts` centralizados adicionados para seleção de modelo e composição do prompt do sistema
+- `morpheus-api/src/routes/chat.ts` reescrito para usar tools reais, fallback de modelos e integração com planner/reflector
+- mudanças autônomas de código agora priorizam `branch temporária + PR` em vez de escrita direta na `main`
+- SQL de apoio criado em `sql/morpheus_plans.sql` e `sql/morpheus_reflections.sql`
+
+## Deploy
+
+- Frontend atual: `https://morpheus-app-six.vercel.app`
+- Backend esperado no Render: `https://morpheus-api.onrender.com`
+- Endpoint de saúde: `/api/health`
+- Endpoint de circuit breaker: `/api/health/circuit-breaker`
 
 ## Estrutura
 

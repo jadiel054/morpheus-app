@@ -26,7 +26,7 @@ router.post('/send', authenticate, async (req, res) => {
     if (!tgRes.ok) throw new Error(data.description || tgRes.status)
     res.json({ ok: true, result: data.result })
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message })
+    res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) })
   }
 })
 
@@ -53,7 +53,7 @@ router.post('/broadcast', authenticate, async (req, res) => {
       const data = await tgRes.json()
       results.push({ botId, ok: tgRes.ok, result: data.result })
     } catch (err) {
-      results.push({ botId, ok: false, error: err.message })
+      results.push({ botId, ok: false, error: err instanceof Error ? err.message : String(err) })
     }
   }
 

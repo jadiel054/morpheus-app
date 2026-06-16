@@ -6,8 +6,135 @@ import { listAllRepos, readRepoFile, listRepoContents, commitFile, createBranch,
 import { gitOperatorCommitAndPR, gitOperatorProtocoloExtincao } from './gitOperator'
 import { pollDeployStatus, autoDiagnose, applyAutoFix } from './deployAnalyst'
 import { sendTelegramMessage } from './telegramOrchestrator'
+import { z } from 'zod'
+import { podeExecutar, registrarSucesso, registrarFalha } from '../../../lib/circuitBreaker.js'
 
 const GITHUB_API = 'https://api.github.com'
+
+const GitHubReadSchema = z.object({
+  repo: z.string().min(1, 'repo e obrigatorio'),
+  filePath: z.string().min(1, 'filePath e obrigatorio').optional(),
+  path: z.string().min(1, 'path e obrigatorio').optional(),
+  owner: z.string().optional(),
+}).superRefine((valor, contexto) => {
+  if (!valor.filePath && !valor.path) {
+    contexto.addIssue({ code: z.ZodIssueCode.custom, message: 'filePath ou path e obrigatorio', path: ['filePath'] })
+  }
+}).transform((valor) => ({
+  repo: valor.repo,
+  filePath: valor.filePath || valor.path,
+  path: valor.path || valor.filePath,
+  owner: valor.owner,
+}))
+
+const GitHubWriteSchema = z.object({
+  repo: z.string().min(1, 'repo e obrigatorio'),
+  filePath: z.string().min(1, 'filePath e obrigatorio').optional(),
+  path: z.string().min(1, 'path e obrigatorio').optional(),
+  content: z.string().min(1, 'content nao pode ser vazio'),
+  message: z.string().min(1, 'mensagem de commit e obrigatoria'),
+  branch: z.string().default('main'),
+  owner: z.string().optional(),
+}).superRefine((valor, contexto) => {
+  if (!valor.filePath && !valor.path) {
+    contexto.addIssue({ code: z.ZodIssueCode.custom, message: 'filePath ou path e obrigatorio', path: ['filePath'] })
+  }
+}).transform((valor) => ({
+  ...valor,
+  filePath: valor.filePath || valor.path,
+}))
+
+const GitHubBranchSchema = z.object({
+  repo: z.string().min(1, 'repo e obrigatorio'),
+  branchName: z.string().min(1, 'branchName e obrigatorio').optional(),
+  branch: z.string().min(1, 'branch e obrigatorio').optional(),
+  fromBranch: z.string().optional(),
+  from: z.string().optional(),
+  owner: z.string().optional(),
+}).superRefine((valor, contexto) => {
+  if (!valor.branchName && !valor.branch) {
+    contexto.addIssue({ code: z.ZodIssueCode.custom, message: 'branchName ou branch e obrigatorio', path: ['branchName'] })
+  }
+}).transform((valor) => ({
+  repo: valor.repo,
+  branchName: valor.branchName || valor.branch,
+  fromBranch: valor.fromBranch || valor.from || 'main',
+  owner: valor.owner,
+}))
+
+const SupabaseQuerySchema = z.object({
+  table: z.string().min(1, 'tabela e obrigatoria'),
+  query: z.record(z.any()).optional(),
+  columns: z.string().optional(),
+})
+
+const SupabaseWriteSchema = z.object({
+  table: z.string().min(1, 'tabela e obrigatoria'),
+  data: z.any(),
+})
+
+const VercelDeploySchema = z.object({
+  deployId: z.string().min(1, 'deployId e obrigatorio').optional(),
+})
+
+const WebSearchSchema = z.object({
+  query: z.string().min(3, 'query deve ter ao menos 3 caracteres'),
+  maxResults: z.number().int().positive().max(20).optional(),
+  limit: z.number().int().positive().max(20).optional(),
+}).transform((valor) => ({
+  query: valor.query,
+  maxResults: valor.maxResults || valor.limit || 5,
+}))
+
+const TelegramSchema = z.object({
+  message: z.string().min(1, 'mensagem e obrigatoria'),
+  botName: z.string().min(1, 'botName e obrigatorio'),
+})
+
+const TOOL_SCHEMAS = {
+  github_read_file: GitHubReadSchema,
+  github_list_files: GitHubReadSchema,
+  github_commit_file: GitHubWriteSchema,
+  github_push_all: GitHubWriteSchema.extend({
+    description: z.string().optional(),
+  }),
+  github_create_branch: GitHubBranchSchema,
+  supabase_read: SupabaseQuerySchema,
+  supabase_write: SupabaseWriteSchema,
+  vercel_get_logs: VercelDeploySchema,
+  vercel_diagnose: VercelDeploySchema,
+  web_search: WebSearchSchema,
+  telegram_send: TelegramSchema,
+}
+
+function validar(schema, params, nomeTool) {
+  const resultado = schema.safeParse(params)
+  if (!resultado.success) {
+    const erros = resultado.error.errors
+      .map((erro) => `${erro.path.join('.') || 'params'}: ${erro.message}`)
+      .join(' | ')
+    throw new Error(`[${nomeTool}] Parametros invalidos — ${erros}`)
+  }
+  return resultado.data
+}
+
+function validarToolInput(nomeTool, input) {
+  const schema = TOOL_SCHEMAS[nomeTool]
+  if (!schema) return input
+  return validar(schema, input, nomeTool)
+}
+
+async function executarComCircuito(nomeTool, fn, params) {
+  podeExecutar(nomeTool)
+  try {
+    const resultado = await fn(params)
+    registrarSucesso(nomeTool)
+    return resultado
+  } catch (erro) {
+    registrarFalha(nomeTool)
+    throw erro
+  }
+}
 
 // ====== GITHUB TOOLS ======
 
@@ -367,7 +494,8 @@ export async function executeToolCall(name, input) {
   const tool = TOOL_REGISTRY[name]
   if (!tool) return { error: 'Tool not found: ' + name }
   try {
-    return await tool(input || {})
+    const params = validarToolInput(name, input || {})
+    return await executarComCircuito(name, tool, params)
   } catch (err) {
     return { error: 'Tool execution error: ' + err.message }
   }

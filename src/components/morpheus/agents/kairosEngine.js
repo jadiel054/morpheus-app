@@ -1,4 +1,5 @@
 import { sendNotification } from '../../../lib/pushNotifications'
+import { exigeAprovacaoHumana, AUTONOMY_POLICY } from '../../../lib/autonomyPolicy'
 
 const TICK_MS = 30000
 const IDLE_MS = 120000
@@ -195,6 +196,7 @@ export class KairosEngine {
   }
 
   shouldStop(action) {
+    if (exigeAprovacaoHumana(action)) return true
     return STOP_CONDITIONS.some(condition => condition(action, this.actionHistory))
   }
 
@@ -285,6 +287,10 @@ export class KairosEngine {
       status: 'pending',
       requiresApproval: true,
     })
+
+    if (this.failedActions.filter(item => item.type === action.type).length >= AUTONOMY_POLICY.maxConsecutiveFailures) {
+      console.warn('[KAIROS] Circuito humano ativado para:', action.type)
+    }
 
     try {
       const { sendTelegramMessage } = await import('../tools/telegramOrchestrator')

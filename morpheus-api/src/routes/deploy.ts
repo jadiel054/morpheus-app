@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express'
-import { authMiddleware } from '../middleware/auth'
+import { authMiddleware } from '../middleware/auth.js'
 
 export const deployRouter = Router()
 
@@ -16,3 +16,5 @@ deployRouter.get('/logs/:id', authMiddleware, async (req: Request, res: Response
   try { const r = await fetch('https://api.vercel.com/v2/deployments/' + req.params.id + '/events', { headers: { Authorization: 'Bearer ' + token } }); return res.json({ logs: await r.text() }) }
   catch (err) { return res.status(500).json({ error: String(err) }) }
 })
+
+export default deployRouter
