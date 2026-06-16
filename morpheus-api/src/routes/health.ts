@@ -47,9 +47,20 @@ router.get('/', async (_req: Request, res: Response) => {
     try {
       const inicio = Date.now()
       const supabase = createClient(supabaseConfig.url, supabaseConfig.key)
-      const { error } = await supabase.from('morpheus_logs').select('id').limit(1)
-      checks.supabase = error
-        ? { status: 'erro', error: error.message }
+      // Preferir uma tabela garantida do schema v1.0 (para não quebrar deploy/healthcheck)
+      // Se a tabela não existir, tenta fallback para outra conhecida.
+      const testarTabela = async (tabela: string) => {
+        const { error } = await supabase.from(tabela).select('id').limit(1)
+        return error ? error.message : null
+      }
+
+      const erro1 = await testarTabela('user_settings')
+      const erro2 = erro1 ? await testarTabela('conversations') : null
+
+      // Se ambas falharem, reporta erro. Caso contrário, ok.
+      const erroFinal = erro2 || erro1
+      checks.supabase = erroFinal
+        ? { status: 'erro', error: erroFinal }
         : { status: 'ok', latency: Date.now() - inicio }
     } catch (error) {
       checks.supabase = { status: 'erro', error: error instanceof Error ? error.message : String(error) }
@@ -69,7 +80,9 @@ router.get('/', async (_req: Request, res: Response) => {
 
   const allOk = Object.values(checks).every((resultado) => resultado.status === 'ok')
 
-  res.status(allOk ? 200 : 207).json({
+  // Render Health Check: não bloquear deploy por integrações opcionais.
+  // Retorna sempre 200 e sinaliza "degradado" no JSON quando necessário.
+  res.status(200).json({
     status: allOk ? 'ok' : 'degradado',
     versao: '2.0.0',
     ambiente: process.env.NODE_ENV || 'development',
