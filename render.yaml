@@ -34,5 +34,6 @@ services:
         sync: false
       - key: FRONTEND_URL
         value: https://morpheus-app-six.vercel.app
+    # Endpoint usado pelo Render para validar saúde do serviço
     healthCheckPath: /api/health
     autoDeploy: true

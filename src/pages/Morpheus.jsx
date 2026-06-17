@@ -36,6 +36,7 @@ import { ObservabilityPanel } from '../components/morpheus/ObservabilityPanel'
 import { AgentPlannerPanel } from '../components/morpheus/AgentPlannerPanel'
 
 const DEFAULT_TAB = { id: 'tab-1', title: 'Nova Conversa', messages: [] }
+const KEEP_ALIVE_INTERVAL_MS = 14 * 60 * 1000
 
 function migrateOldKeys() {
   try {
@@ -295,6 +296,7 @@ export default function Morpheus() {
   const [memory, setMemory] = useState(() => loadUserMemory(user?.id || 'local'))
   const messagesEndRef = useRef(null)
   const activeTab = tabs.find(t => t.id === activeTabId) || tabs[0]
+  const apiBaseUrl = import.meta.env.VITE_API_URL || window.location.origin
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [activeTab?.messages])
 
@@ -328,6 +330,23 @@ export default function Morpheus() {
 
   useEffect(() => { migrateOldKeys() }, [])
   useEffect(() => { if (user) { syncRepoRegistry() } }, [user])
+  useEffect(() => {
+    const pingBackend = async () => {
+      try {
+        await fetch(`${apiBaseUrl}/api/health`, {
+          method: 'GET',
+          cache: 'no-store',
+        })
+      } catch (error) {
+        console.warn('[MORPHEUS] Keep-alive falhou:', error)
+      }
+    }
+
+    pingBackend()
+    const intervalId = setInterval(pingBackend, KEEP_ALIVE_INTERVAL_MS)
+
+    return () => clearInterval(intervalId)
+  }, [apiBaseUrl])
 
   const updateSettings = useCallback((patch) => { setSettings(prev => { const next = { ...prev, ...patch }; localStorage.setItem('morpheus_settings', JSON.stringify(next)); return next }) }, [])
 
