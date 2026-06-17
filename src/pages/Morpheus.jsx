@@ -261,7 +261,7 @@ async function detectAndExecuteTool(text, { setPlanSteps, updatePlanStep, setPla
 }
 
 export default function Morpheus() {
-  const { user, authState, signOut } = useAuth()
+  const { user, session, authState, signOut } = useAuth()
   const kokoro = useKokoroTTS()
   const voiceLiveOptions = useMemo(() => ({ language: 'pt-BR' }), [])
   const voiceLive = useVoiceLive(voiceLiveOptions)
@@ -373,6 +373,7 @@ export default function Morpheus() {
   const callAI = useCallback(async (systemPrompt, userText, history = []) => {
     const stored = (() => { try { return JSON.parse(localStorage.getItem('morpheus_settings') || '{}') } catch { return {} } })()
     const integrations = (() => { try { return JSON.parse(localStorage.getItem('morpheus_integrations') || '{}') } catch { return {} } })()
+    const selectedModel = stored.ai_model || settings.ai_model || 'auto'
     const groqKey = integrations.groq?.key || stored.groq_api_key || ''
     const openrouterKey = integrations.openrouter?.key || stored.openrouter_api_key || ''
     const claudeKey = integrations.claude?.key || stored.claude_api_key || ''
@@ -381,14 +382,83 @@ export default function Morpheus() {
     const geminiKey = integrations.gemini?.key || stored.gemini_api_key || ''
     const isValidKey = (k) => k && k.length > 10 && k !== 'sk-...'
 
-    if (isValidKey(groqKey)) { try { const res = await fetch('https://api.groq.com/openai/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${groqKey}` }, body: JSON.stringify({ model: 'llama-3.3-70b-versatile', messages: [{ role: 'system', content: systemPrompt }, ...history.slice(-10), { role: 'user', content: userText }], max_tokens: 2048, temperature: 0.7 }) }); if (res.ok) { const d = await res.json(); return { content: d.choices?.[0]?.message?.content || 'Sem resposta', model: 'groq/llama-3.3-70b' } } } catch (e) { console.warn('[callAI] Groq falhou:', e) } }
-    if (isValidKey(claudeKey)) { try { const res = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': claudeKey, 'anthropic-version': '2023-06-01' }, body: JSON.stringify({ model: 'claude-3-5-sonnet-20241022', max_tokens: 2048, system: systemPrompt, messages: [...history.slice(-10), { role: 'user', content: userText }] }) }); if (res.ok) { const d = await res.json(); return { content: d.content?.[0]?.text || 'Sem resposta', model: 'claude-3.5-sonnet' } } } catch (e) { console.warn('[callAI] Claude falhou:', e) } }
-    if (isValidKey(openaiKey)) { try { const res = await fetch('https://api.openai.com/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${openaiKey}` }, body: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'system', content: systemPrompt }, ...history.slice(-10), { role: 'user', content: userText }], max_tokens: 2048 }) }); if (res.ok) { const d = await res.json(); return { content: d.choices?.[0]?.message?.content || 'Sem resposta', model: 'openai/gpt-4o-mini' } } } catch (e) { console.warn('[callAI] OpenAI falhou:', e) } }
-    if (isValidKey(openrouterKey)) { try { const res = await fetch('https://openrouter.ai/api/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${openrouterKey}`, 'HTTP-Referer': window.location.origin }, body: JSON.stringify({ model: 'meta-llama/llama-3.3-70b-instruct', messages: [{ role: 'system', content: systemPrompt }, ...history.slice(-10), { role: 'user', content: userText }], max_tokens: 2048 }) }); if (res.ok) { const d = await res.json(); return { content: d.choices?.[0]?.message?.content || 'Sem resposta', model: 'openrouter/llama-3.3-70b' } } } catch (e) { console.warn('[callAI] OpenRouter falhou:', e) } }
-    if (isValidKey(deepseekKey)) { try { const res = await fetch('https://api.deepseek.com/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${deepseekKey}` }, body: JSON.stringify({ model: 'deepseek-chat', messages: [{ role: 'system', content: systemPrompt }, ...history.slice(-10), { role: 'user', content: userText }], max_tokens: 2048 }) }); if (res.ok) { const d = await res.json(); return { content: d.choices?.[0]?.message?.content || 'Sem resposta', model: 'deepseek/deepseek-chat' } } } catch (e) { console.warn('[callAI] DeepSeek falhou:', e) } }
-    if (isValidKey(geminiKey)) { try { const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ system_instruction: { parts: [{ text: systemPrompt }] }, contents: [{ role: 'user', parts: [{ text: userText }] }] }) }); if (res.ok) { const d = await res.json(); return { content: d.candidates?.[0]?.content?.parts?.[0]?.text || 'Sem resposta', model: 'gemini/2.0-flash' } } } catch (e) { console.warn('[callAI] Gemini falhou:', e) } }
+    const apiKeys = {
+      groq: groqKey,
+      openrouter: openrouterKey,
+      claude: claudeKey,
+      anthropic: claudeKey,
+      openai: openaiKey,
+      deepseek: deepseekKey,
+      gemini: geminiKey,
+      google: geminiKey,
+      github: integrations.github?.token || '',
+      vercel: integrations.vercel?.token || '',
+    }
+
+    if (session?.access_token) {
+      try {
+        const response = await fetch(`${apiBaseUrl}/api/chat`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({
+            messages: [...history.slice(-10), { role: 'user', content: userText }],
+            apiKeys,
+            model: selectedModel,
+          }),
+        })
+
+        if (response.ok && response.body) {
+          const reader = response.body.getReader()
+          const decoder = new TextDecoder()
+          let buffer = ''
+          let finalContent = ''
+          let usedModel = selectedModel
+
+          while (true) {
+            const { value, done } = await reader.read()
+            if (done) break
+            buffer += decoder.decode(value, { stream: true })
+
+            const chunks = buffer.split('\n\n')
+            buffer = chunks.pop() || ''
+
+            for (const chunk of chunks) {
+              const eventMatch = chunk.match(/event:\s*(.+)/)
+              const dataMatch = chunk.match(/data:\s*([\s\S]+)/)
+              const eventType = eventMatch?.[1]?.trim()
+              const data = dataMatch ? JSON.parse(dataMatch[1]) : {}
+
+              if (eventType === 'error') {
+                throw new Error(data.message || 'Falha no backend')
+              }
+
+              if (eventType === 'content') {
+                finalContent = data.content || finalContent
+                usedModel = data.model || usedModel
+              }
+            }
+          }
+
+          if (finalContent) {
+            return { content: finalContent, model: usedModel }
+          }
+        }
+      } catch (e) {
+        console.warn('[callAI] Backend falhou, tentando fallback direto:', e)
+      }
+    }
+
+    if (selectedModel === 'anthropic_claude_sonnet' || selectedModel === 'claude') { if (isValidKey(claudeKey)) { try { const res = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': claudeKey, 'anthropic-version': '2023-06-01' }, body: JSON.stringify({ model: 'claude-3-5-sonnet-20241022', max_tokens: 2048, system: systemPrompt, messages: [...history.slice(-10), { role: 'user', content: userText }] }) }); if (res.ok) { const d = await res.json(); return { content: d.content?.[0]?.text || 'Sem resposta', model: 'claude-3-5-sonnet-20241022' } } } catch (e) { console.warn('[callAI] Claude falhou:', e) } } }
+    if (selectedModel === 'openai_gpt4o') { if (isValidKey(openaiKey)) { try { const res = await fetch('https://api.openai.com/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${openaiKey}` }, body: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'system', content: systemPrompt }, ...history.slice(-10), { role: 'user', content: userText }], max_tokens: 2048 }) }); if (res.ok) { const d = await res.json(); return { content: d.choices?.[0]?.message?.content || 'Sem resposta', model: 'gpt-4o-mini' } } } catch (e) { console.warn('[callAI] OpenAI falhou:', e) } } }
+    if (selectedModel === 'google_gemini_flash') { if (isValidKey(geminiKey)) { try { const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ system_instruction: { parts: [{ text: systemPrompt }] }, contents: [{ role: 'user', parts: [{ text: userText }] }] }) }); if (res.ok) { const d = await res.json(); return { content: d.candidates?.[0]?.content?.parts?.[0]?.text || 'Sem resposta', model: 'gemini-2.0-flash' } } } catch (e) { console.warn('[callAI] Gemini falhou:', e) } } }
+    if (selectedModel === 'openrouter_deepseek' || selectedModel === 'openrouter_qwen' || selectedModel === 'openrouter_qwen_coder' || selectedModel === 'openrouter_glm') { if (isValidKey(openrouterKey)) { try { const modelMap = { openrouter_deepseek: 'deepseek/deepseek-r1', openrouter_qwen: 'qwen/qwen-2.5-coder-32b-instruct', openrouter_qwen_coder: 'qwen/qwen-2.5-coder-32b-instruct', openrouter_glm: 'thudm/glm-4-9b' }; const res = await fetch('https://openrouter.ai/api/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${openrouterKey}`, 'HTTP-Referer': window.location.origin }, body: JSON.stringify({ model: modelMap[selectedModel], messages: [{ role: 'system', content: systemPrompt }, ...history.slice(-10), { role: 'user', content: userText }], max_tokens: 2048 }) }); if (res.ok) { const d = await res.json(); return { content: d.choices?.[0]?.message?.content || 'Sem resposta', model: modelMap[selectedModel] } } } catch (e) { console.warn('[callAI] OpenRouter falhou:', e) } } }
+    if (selectedModel === 'groq_mixtral') { if (isValidKey(groqKey)) { try { const res = await fetch('https://api.groq.com/openai/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${groqKey}` }, body: JSON.stringify({ model: 'mixtral-8x7b-32768', messages: [{ role: 'system', content: systemPrompt }, ...history.slice(-10), { role: 'user', content: userText }], max_tokens: 2048, temperature: 0.7 }) }); if (res.ok) { const d = await res.json(); return { content: d.choices?.[0]?.message?.content || 'Sem resposta', model: 'mixtral-8x7b-32768' } } } catch (e) { console.warn('[callAI] Groq Mixtral falhou:', e) } } }
+    if (isValidKey(groqKey)) { try { const res = await fetch('https://api.groq.com/openai/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${groqKey}` }, body: JSON.stringify({ model: 'llama-3.3-70b-versatile', messages: [{ role: 'system', content: systemPrompt }, ...history.slice(-10), { role: 'user', content: userText }], max_tokens: 2048, temperature: 0.7 }) }); if (res.ok) { const d = await res.json(); return { content: d.choices?.[0]?.message?.content || 'Sem resposta', model: 'llama-3.3-70b-versatile' } } } catch (e) { console.warn('[callAI] Groq falhou:', e) } }
     return { content: '[MORPHEUS] Nenhum LLM configurado. Va em Configuracoes > Integracoes e adicione sua GROQ API Key (gratuita em console.groq.com).', model: 'none' }
-  }, [])
+  }, [apiBaseUrl, session, settings.ai_model])
 
   const handleSend = useCallback(async (text, files = [], fromVoice = false) => {
     kairos.recordUserAction()
@@ -401,13 +471,17 @@ export default function Morpheus() {
     if (toolResult !== null) {
       addStep('Formatando resposta...')
       try {
-        const stored = (() => { try { return JSON.parse(localStorage.getItem('morpheus_settings') || '{}') } catch { return {} } })()
-        const integrations = (() => { try { return JSON.parse(localStorage.getItem('morpheus_integrations') || '{}') } catch { return {} } })()
-        const groqKey = integrations.groq?.key || stored.groq_api_key || ''; const isValidKey = (k) => k && k.length > 10 && k !== 'sk-...'
         let formatted = `**Resultado:**\n\n${toolResult}`
-        if (isValidKey(groqKey)) { try { const res = await fetch('https://api.groq.com/openai/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${groqKey}` }, body: JSON.stringify({ model: 'llama-3.3-70b-versatile', messages: [{ role: 'system', content: 'Voce e MORPHEUS. Apresente dados de forma clara e organizada em portugues.' }, { role: 'user', content: `O usuario pediu: "${text}"\n\nDados obtidos:\n${toolResult}\n\nApresente estes dados de forma clara, organizada e util em portugues.` }], max_tokens: 1024, temperature: 0.7 }) }); if (res.ok) { const d = await res.json(); formatted = d.choices?.[0]?.message?.content || formatted } } catch {} }
+        try {
+          const formattedResult = await callAI(
+            'Voce e MORPHEUS. Apresente dados de forma clara e organizada em portugues.',
+            `O usuario pediu: "${text}"\n\nDados obtidos:\n${toolResult}\n\nApresente estes dados de forma clara, organizada e util em portugues.`,
+            [],
+          )
+          formatted = formattedResult.content || formatted
+        } catch {}
         completeLastStep('Resposta pronta')
-        const assistantMsg = { role: 'assistant', content: formatted, timestamp: Date.now(), model: 'groq/llama-3.3-70b' }
+        const assistantMsg = { role: 'assistant', content: formatted, timestamp: Date.now(), model: settings.ai_model || 'auto' }
         updateActiveTab(tab => { const updated = { ...tab, messages: [...tab.messages, assistantMsg] }; if (user) saveConversation(updated); return updated })
       } catch (err) { const errMsg = { role: 'assistant', content: 'Erro: ' + (err.message || 'Falha desconhecida'), timestamp: Date.now(), model: 'error' }; updateActiveTab(tab => ({ ...tab, messages: [...tab.messages, errMsg] })) }
       finally { setIsLoading(false); clearSteps(); clearPlan() }

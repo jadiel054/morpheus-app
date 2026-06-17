@@ -1,6 +1,6 @@
 export type ModeloConfig = {
   id: string
-  provider: 'groq' | 'openrouter'
+  provider: 'groq' | 'openrouter' | 'anthropic' | 'openai' | 'google'
   suportaTools: boolean
   prioridade: number
   temperatura: number
@@ -63,6 +63,33 @@ export const MODELOS: Record<string, ModeloConfig> = {
     maxTokens: 4096,
     uso: 'fallback final',
   },
+  anthropic_claude_sonnet: {
+    id: 'claude-3-5-sonnet-20241022',
+    provider: 'anthropic',
+    suportaTools: false,
+    prioridade: 7,
+    temperatura: 0.3,
+    maxTokens: 8192,
+    uso: 'escrita, análise ampla e instruções complexas',
+  },
+  openai_gpt4o: {
+    id: 'gpt-4o-mini',
+    provider: 'openai',
+    suportaTools: false,
+    prioridade: 8,
+    temperatura: 0.3,
+    maxTokens: 8192,
+    uso: 'fallback OpenAI para tarefas gerais',
+  },
+  google_gemini_flash: {
+    id: 'gemini-2.0-flash',
+    provider: 'google',
+    suportaTools: false,
+    prioridade: 9,
+    temperatura: 0.4,
+    maxTokens: 8192,
+    uso: 'velocidade alta via Google Gemini',
+  },
 }
 
 const MAPA_TAREFA_MODELO: Record<string, string> = {
@@ -74,9 +101,34 @@ const MAPA_TAREFA_MODELO: Record<string, string> = {
   padrao: 'groq_llama',
 }
 
+const ALIAS_MODELOS: Record<string, string> = {
+  auto: 'groq_llama',
+  groq_llama: 'groq_llama',
+  groq_mixtral: 'groq_mixtral',
+  openrouter_qwen: 'openrouter_qwen',
+  openrouter_qwen_coder: 'openrouter_qwen',
+  openrouter_deepseek: 'openrouter_deepseek',
+  openrouter_glm: 'openrouter_glm',
+  openrouter_gemini: 'openrouter_gemini',
+  anthropic_claude_sonnet: 'anthropic_claude_sonnet',
+  claude: 'anthropic_claude_sonnet',
+  openai_gpt4o: 'openai_gpt4o',
+  google_gemini_flash: 'google_gemini_flash',
+}
+
 export function rotearModelo(tipoTarefa = 'padrao') {
   const chave = MAPA_TAREFA_MODELO[tipoTarefa] || MAPA_TAREFA_MODELO.padrao
   return MODELOS[chave]
+}
+
+export function resolverModelo(model?: string) {
+  if (!model) return null
+
+  const alias = ALIAS_MODELOS[model]
+  if (alias && MODELOS[alias]) return MODELOS[alias]
+
+  const encontradoPorId = Object.values(MODELOS).find((item) => item.id === model)
+  return encontradoPorId || null
 }
 
 export function melhorModeloComTools() {

@@ -53,6 +53,33 @@ export const MODELOS = {
     maxTokens: 4096,
     uso: 'fallback final',
   },
+  anthropic_claude_sonnet: {
+    id: 'claude-3-5-sonnet-20241022',
+    provider: 'anthropic',
+    suportaTools: false,
+    prioridade: 7,
+    temperatura: 0.3,
+    maxTokens: 8192,
+    uso: 'escrita, análise ampla e instruções complexas',
+  },
+  openai_gpt4o: {
+    id: 'gpt-4o-mini',
+    provider: 'openai',
+    suportaTools: false,
+    prioridade: 8,
+    temperatura: 0.3,
+    maxTokens: 8192,
+    uso: 'fallback OpenAI para tarefas gerais',
+  },
+  google_gemini_flash: {
+    id: 'gemini-2.0-flash',
+    provider: 'google',
+    suportaTools: false,
+    prioridade: 9,
+    temperatura: 0.4,
+    maxTokens: 8192,
+    uso: 'velocidade alta via Google Gemini',
+  },
 }
 
 const MAPA_TAREFA_MODELO = {

@@ -4,7 +4,7 @@ import { PlannerEngine, TOOLS_PLANNER } from '../agents/plannerEngine.js'
 import { ReflectorEngine, TOOL_REFLECTOR } from '../agents/reflectorEngine.js'
 import { podeExecutar, registrarSucesso, registrarFalha } from '../lib/circuitBreaker.js'
 import { montarPrompt } from '../lib/prompts.js'
-import { MODELOS, rotearModelo, melhorModeloComTools, cadeiaDeFallback } from '../agents/modelRouter.js'
+import { MODELOS, rotearModelo, cadeiaDeFallback, resolverModelo } from '../agents/modelRouter.js'
 import { obterSupabaseAdmin, supabaseAdmin } from '../lib/supabaseAdmin.js'
 import { branchProtegida, gerarBranchAutonomo, resumirExecucaoAutonoma } from '../lib/autonomyPolicy.js'
 
@@ -211,7 +211,7 @@ function inferirTipoTarefa(userMessage: string) {
 
 function obterModeloInicial(model: string | undefined, tipoTarefa: string) {
   if (model && model !== 'auto') {
-    const personalizado = Object.values(MODELOS).find((item) => item.id === model)
+    const personalizado = resolverModelo(model)
     if (personalizado) return personalizado
     return { ...rotearModelo(tipoTarefa), id: model }
   }
@@ -219,22 +219,36 @@ function obterModeloInicial(model: string | undefined, tipoTarefa: string) {
   return rotearModelo(tipoTarefa)
 }
 
-function obterApiKey(provider: 'groq' | 'openrouter', apiKeys: Record<string, string> | undefined) {
+function obterApiKey(provider: 'groq' | 'openrouter' | 'anthropic' | 'openai' | 'google', apiKeys: Record<string, string> | undefined) {
   if (provider === 'groq') return apiKeys?.groq || process.env.GROQ_API_KEY || ''
-  return apiKeys?.openrouter || process.env.OPENROUTER_API_KEY || ''
+  if (provider === 'openrouter') return apiKeys?.openrouter || process.env.OPENROUTER_API_KEY || ''
+  if (provider === 'anthropic') return apiKeys?.anthropic || apiKeys?.claude || process.env.CLAUDE_API_KEY || ''
+  if (provider === 'openai') return apiKeys?.openai || process.env.OPENAI_API_KEY || ''
+  return apiKeys?.google || apiKeys?.gemini || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || ''
 }
 
-function obterUrlProvider(provider: 'groq' | 'openrouter') {
-  return provider === 'groq'
-    ? 'https://api.groq.com/openai/v1/chat/completions'
-    : 'https://openrouter.ai/api/v1/chat/completions'
+function obterUrlProvider(provider: 'groq' | 'openrouter' | 'anthropic' | 'openai' | 'google', modelId: string, apiKey: string) {
+  if (provider === 'groq') return 'https://api.groq.com/openai/v1/chat/completions'
+  if (provider === 'openrouter') return 'https://openrouter.ai/api/v1/chat/completions'
+  if (provider === 'anthropic') return 'https://api.anthropic.com/v1/messages'
+  if (provider === 'openai') return 'https://api.openai.com/v1/chat/completions'
+  return `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`
 }
 
-function criarHeadersProvider(provider: 'groq' | 'openrouter', apiKey: string) {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    Authorization: `Bearer ${apiKey}`,
+function criarHeadersProvider(provider: 'groq' | 'openrouter' | 'anthropic' | 'openai' | 'google', apiKey: string) {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+
+  if (provider === 'anthropic') {
+    headers['x-api-key'] = apiKey
+    headers['anthropic-version'] = '2023-06-01'
+    return headers
   }
+
+  if (provider === 'google') {
+    return headers
+  }
+
+  headers.Authorization = `Bearer ${apiKey}`
 
   if (provider === 'openrouter') {
     headers['HTTP-Referer'] = process.env.FRONTEND_URL || 'https://morpheus-app-six.vercel.app'
@@ -249,7 +263,7 @@ function serializarErro(error: unknown) {
 }
 
 async function chamarModelo(
-  modelo: { id: string, provider: 'groq' | 'openrouter', suportaTools: boolean, temperatura: number, maxTokens: number },
+  modelo: { id: string, provider: 'groq' | 'openrouter' | 'anthropic' | 'openai' | 'google', suportaTools: boolean, temperatura: number, maxTokens: number },
   conversation: Array<Record<string, unknown>>,
   tools: typeof TOOL_DEFINITIONS,
   apiKeys: Record<string, string> | undefined,
@@ -263,17 +277,35 @@ async function chamarModelo(
   while (tentativa < MAX_LLM_ATTEMPTS) {
     tentativa += 1
     try {
-      const response = await fetch(obterUrlProvider(modelo.provider), {
+      const response = await fetch(obterUrlProvider(modelo.provider, modelo.id, apiKey), {
         method: 'POST',
         headers: criarHeadersProvider(modelo.provider, apiKey),
-        body: JSON.stringify({
-          model: modelo.id,
-          messages: conversation,
-          tools: modelo.suportaTools ? tools : undefined,
-          tool_choice: modelo.suportaTools ? 'auto' : undefined,
-          max_tokens: Math.min(modelo.maxTokens, 4096),
-          temperature: modelo.temperatura,
-        }),
+        body: JSON.stringify(
+          modelo.provider === 'anthropic'
+            ? {
+                model: modelo.id,
+                max_tokens: Math.min(modelo.maxTokens, 4096),
+                system: String(conversation.find((item) => item.role === 'system')?.content || ''),
+                messages: conversation
+                  .filter((item) => item.role !== 'system')
+                  .map((item) => ({ role: item.role === 'assistant' ? 'assistant' : 'user', content: item.content })),
+              }
+            : modelo.provider === 'google'
+              ? {
+                  system_instruction: { parts: [{ text: String(conversation.find((item) => item.role === 'system')?.content || '') }] },
+                  contents: conversation
+                    .filter((item) => item.role !== 'system')
+                    .map((item) => ({ role: item.role === 'assistant' ? 'model' : 'user', parts: [{ text: String(item.content || '') }] })),
+                }
+              : {
+                  model: modelo.id,
+                  messages: conversation,
+                  tools: modelo.suportaTools ? tools : undefined,
+                  tool_choice: modelo.suportaTools ? 'auto' : undefined,
+                  max_tokens: Math.min(modelo.maxTokens, 4096),
+                  temperature: modelo.temperatura,
+                },
+        ),
       })
 
       if (!response.ok) {
@@ -286,7 +318,23 @@ async function chamarModelo(
         continue
       }
 
-      return await response.json()
+      const data = await response.json()
+
+      if (modelo.provider === 'anthropic') {
+        return {
+          choices: [{ finish_reason: 'stop', message: { content: data.content?.[0]?.text || '' } }],
+          usage: { total_tokens: data.usage?.input_tokens ? data.usage.input_tokens + (data.usage?.output_tokens || 0) : 0 },
+        }
+      }
+
+      if (modelo.provider === 'google') {
+        return {
+          choices: [{ finish_reason: 'stop', message: { content: data.candidates?.[0]?.content?.parts?.[0]?.text || '' } }],
+          usage: { total_tokens: data.usageMetadata?.totalTokenCount || 0 },
+        }
+      }
+
+      return data
     } catch (error) {
       if (tentativa >= MAX_LLM_ATTEMPTS) throw error
       await sleep(RETRY_DELAY * tentativa)
@@ -297,7 +345,7 @@ async function chamarModelo(
 }
 
 async function chamarComFallback(
-  modeloInicial: { id: string, provider: 'groq' | 'openrouter', suportaTools: boolean, temperatura: number, maxTokens: number },
+  modeloInicial: { id: string, provider: 'groq' | 'openrouter' | 'anthropic' | 'openai' | 'google', suportaTools: boolean, temperatura: number, maxTokens: number },
   conversation: Array<Record<string, unknown>>,
   tools: typeof TOOL_DEFINITIONS,
   apiKeys: Record<string, string> | undefined,
@@ -390,7 +438,6 @@ router.post('/', authenticate, async (req: Request, res: Response) => {
   const effortLevel = selectEffortLevel(ultimaMensagem)
   const tipoTarefa = inferirTipoTarefa(ultimaMensagem)
   const modeloInicial = obterModeloInicial(model, tipoTarefa)
-  const modeloComTools = modeloInicial.suportaTools ? modeloInicial : melhorModeloComTools()
   const planner = new PlannerEngine(conversationId || crypto.randomUUID())
   const reflector = new ReflectorEngine()
 
@@ -402,7 +449,7 @@ router.post('/', authenticate, async (req: Request, res: Response) => {
   let loopCount = 0
   let totalTokensUsed = 0
   let finalContent = ''
-  let modeloUsado = modeloComTools.id
+  let modeloUsado = modeloInicial.id
 
   try {
     sendEvent('plan', {
@@ -422,7 +469,7 @@ router.post('/', authenticate, async (req: Request, res: Response) => {
         status: 'running',
       })
 
-      const llmResult = await chamarComFallback(modeloComTools, conversation, TOOL_DEFINITIONS, apiKeys, sendEvent)
+      const llmResult = await chamarComFallback(modeloInicial, conversation, TOOL_DEFINITIONS, apiKeys, sendEvent)
       const llmData = llmResult.data
       modeloUsado = llmResult.modelo.id
 
