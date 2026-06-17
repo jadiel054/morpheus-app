@@ -350,8 +350,11 @@ async function chamarComFallback(
   tools: typeof TOOL_DEFINITIONS,
   apiKeys: Record<string, string> | undefined,
   sendEvent: (type: string, data: Record<string, unknown>) => void,
+  usarSomenteModeloInicial = false,
 ) {
-  const cadeia = [modeloInicial, ...cadeiaDeFallback(modeloInicial.id)]
+  const cadeia = usarSomenteModeloInicial
+    ? [modeloInicial]
+    : [modeloInicial, ...cadeiaDeFallback(modeloInicial.id)]
 
   let ultimoErro: unknown = null
   for (const modelo of cadeia) {
@@ -438,6 +441,7 @@ router.post('/', authenticate, async (req: Request, res: Response) => {
   const effortLevel = selectEffortLevel(ultimaMensagem)
   const tipoTarefa = inferirTipoTarefa(ultimaMensagem)
   const modeloInicial = obterModeloInicial(model, tipoTarefa)
+  const modeloFoiSelecionado = Boolean(model && model !== 'auto')
   const planner = new PlannerEngine(conversationId || crypto.randomUUID())
   const reflector = new ReflectorEngine()
 
@@ -469,7 +473,7 @@ router.post('/', authenticate, async (req: Request, res: Response) => {
         status: 'running',
       })
 
-      const llmResult = await chamarComFallback(modeloInicial, conversation, TOOL_DEFINITIONS, apiKeys, sendEvent)
+      const llmResult = await chamarComFallback(modeloInicial, conversation, TOOL_DEFINITIONS, apiKeys, sendEvent, modeloFoiSelecionado)
       const llmData = llmResult.data
       modeloUsado = llmResult.modelo.id
 

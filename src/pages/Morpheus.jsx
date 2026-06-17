@@ -373,7 +373,7 @@ export default function Morpheus() {
   const callAI = useCallback(async (systemPrompt, userText, history = []) => {
     const stored = (() => { try { return JSON.parse(localStorage.getItem('morpheus_settings') || '{}') } catch { return {} } })()
     const integrations = (() => { try { return JSON.parse(localStorage.getItem('morpheus_integrations') || '{}') } catch { return {} } })()
-    const selectedModel = stored.ai_model || settings.ai_model || 'auto'
+    const selectedModel = settings.ai_model || stored.ai_model || 'auto'
     const groqKey = integrations.groq?.key || stored.groq_api_key || ''
     const openrouterKey = integrations.openrouter?.key || stored.openrouter_api_key || ''
     const claudeKey = integrations.claude?.key || stored.claude_api_key || ''
@@ -407,6 +407,7 @@ export default function Morpheus() {
             messages: [...history.slice(-10), { role: 'user', content: userText }],
             apiKeys,
             model: selectedModel,
+            conversationId: activeTabId,
           }),
         })
 
@@ -458,7 +459,7 @@ export default function Morpheus() {
     if (selectedModel === 'groq_mixtral') { if (isValidKey(groqKey)) { try { const res = await fetch('https://api.groq.com/openai/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${groqKey}` }, body: JSON.stringify({ model: 'mixtral-8x7b-32768', messages: [{ role: 'system', content: systemPrompt }, ...history.slice(-10), { role: 'user', content: userText }], max_tokens: 2048, temperature: 0.7 }) }); if (res.ok) { const d = await res.json(); return { content: d.choices?.[0]?.message?.content || 'Sem resposta', model: 'mixtral-8x7b-32768' } } } catch (e) { console.warn('[callAI] Groq Mixtral falhou:', e) } } }
     if (isValidKey(groqKey)) { try { const res = await fetch('https://api.groq.com/openai/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${groqKey}` }, body: JSON.stringify({ model: 'llama-3.3-70b-versatile', messages: [{ role: 'system', content: systemPrompt }, ...history.slice(-10), { role: 'user', content: userText }], max_tokens: 2048, temperature: 0.7 }) }); if (res.ok) { const d = await res.json(); return { content: d.choices?.[0]?.message?.content || 'Sem resposta', model: 'llama-3.3-70b-versatile' } } } catch (e) { console.warn('[callAI] Groq falhou:', e) } }
     return { content: '[MORPHEUS] Nenhum LLM configurado. Va em Configuracoes > Integracoes e adicione sua GROQ API Key (gratuita em console.groq.com).', model: 'none' }
-  }, [apiBaseUrl, session, settings.ai_model])
+  }, [apiBaseUrl, session, settings.ai_model, activeTabId])
 
   const handleSend = useCallback(async (text, files = [], fromVoice = false) => {
     kairos.recordUserAction()
@@ -538,7 +539,17 @@ export default function Morpheus() {
         <div ref={messagesEndRef} />
       </div>
       <div className="morpheus-input-bar">
-        <ChatInput onSend={handleSend} isLoading={isLoading} isListening={false} onToggleMic={() => {}} isSpeaking={isSpeaking} isLiveVoice={voiceLive.isLive} onToggleLive={() => voiceLive.isLive ? voiceLive.stop() : voiceLive.start()} />
+        <ChatInput
+          onSend={handleSend}
+          isLoading={isLoading}
+          isListening={false}
+          onToggleMic={() => {}}
+          isSpeaking={isSpeaking}
+          isLiveVoice={voiceLive.isLive}
+          onToggleLive={() => voiceLive.isLive ? voiceLive.stop() : voiceLive.start()}
+          selectedModel={settings.ai_model || 'auto'}
+          onChangeModel={(value) => updateSettings({ ai_model: value })}
+        />
       </div>
       {showSettings && <SettingsPanel key={'settings-' + Date.now()} settings={settings} onUpdate={updateSettings} onClose={() => setShowSettings(false)} initialIntegrations={(() => { try { return JSON.parse(localStorage.getItem('morpheus_integrations') || '{}') } catch { return {} } })()} />}
       {showHistory && <ConversationHistory onClose={() => setShowHistory(false)} onLoad={() => setShowHistory(false)} />}

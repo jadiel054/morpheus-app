@@ -2,7 +2,7 @@ import { useState, useRef, useCallback } from 'react'
 import { Send, Mic, MicOff, Paperclip, Volume2, VolumeX } from 'lucide-react'
 import { processFile, processLink, ALL_ACCEPT_TYPES } from '../../lib/fileAttachmentHandler'
 
-export function ChatInput({ onSend, isLoading, isListening, onToggleMic, isSpeaking, isLiveVoice, onToggleLive }) {
+export function ChatInput({ onSend, isLoading, isListening, onToggleMic, isSpeaking, isLiveVoice, onToggleLive, selectedModel = 'auto', onChangeModel }) {
   const [text, setText] = useState('')
   const [attachments, setAttachments] = useState([])
   const [isDragOver, setIsDragOver] = useState(false)
@@ -193,6 +193,23 @@ export function ChatInput({ onSend, isLoading, isListening, onToggleMic, isSpeak
         >
           {voiceEnabled ? 'VOZ' : 'VOZ'}
         </button>
+
+        <select
+          value={selectedModel}
+          onChange={e => onChangeModel?.(e.target.value)}
+          className="bg-dark-bg border border-dark-border rounded px-2 py-2 text-[11px] text-cyan font-mono max-w-[170px]"
+          title="Selecionar modelo"
+        >
+          <option value="auto">AUTO</option>
+          <option value="groq_llama">GROQ LLAMA</option>
+          <option value="groq_mixtral">GROQ MIXTRAL</option>
+          <option value="anthropic_claude_sonnet">CLAUDE 3.5</option>
+          <option value="openrouter_deepseek">DEEPSEEK R1</option>
+          <option value="openrouter_qwen">QWEN CODER</option>
+          <option value="openrouter_glm">GLM-4</option>
+          <option value="google_gemini_flash">GEMINI FLASH</option>
+          <option value="openai_gpt4o">GPT-4O MINI</option>
+        </select>
 
         <button
           type="submit"
