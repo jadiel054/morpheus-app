@@ -399,8 +399,9 @@ export default function Morpheus() {
       auto: 'Auto',
       groq_llama: 'Groq Llama 3.3 70B',
       groq_mixtral: 'Groq Mixtral 8x7B',
-      anthropic_claude_sonnet: 'Claude 3.5 Sonnet',
-      claude: 'Claude 3.5 Sonnet',
+      anthropic_claude_sonnet: 'Claude Sonnet 4.5',
+      'claude-sonnet-4-5-20250929': 'Claude Sonnet 4.5',
+      claude: 'Claude Sonnet 4.5',
       openrouter_deepseek: 'DeepSeek R1 (OpenRouter)',
       openrouter_qwen: 'Qwen Coder (OpenRouter)',
       openrouter_qwen_coder: 'Qwen Coder (OpenRouter)',
@@ -424,12 +425,13 @@ export default function Morpheus() {
         const res = await fetch('https://api.anthropic.com/v1/messages', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'x-api-key': claudeKey, 'anthropic-version': '2023-06-01' },
-          body: JSON.stringify({ model: 'claude-3-5-sonnet-20241022', max_tokens: 2048, system: systemPrompt, messages: [...history.slice(-10), { role: 'user', content: userText }] }),
+          body: JSON.stringify({ model: 'claude-sonnet-4-5-20250929', max_tokens: 2048, system: systemPrompt, messages: [...history.slice(-10), { role: 'user', content: userText }] }),
         })
         if (res.ok) {
           const d = await res.json()
-          return { content: d.content?.[0]?.text || 'Sem resposta', model: 'claude-3-5-sonnet-20241022' }
+          return { content: d.content?.[0]?.text || 'Sem resposta', model: 'claude-sonnet-4-5-20250929' }
         }
+        console.warn('[callAI] Anthropic respondeu erro:', await res.text())
       } catch (e) { console.warn('[callAI] Falha no provedor anthropic:', e) }
       return null
     }
@@ -456,12 +458,13 @@ export default function Morpheus() {
         const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ system_instruction: { parts: [{ text: systemPrompt }] }, contents: [{ role: 'user', parts: [{ text: userText }] }] }),
+          body: JSON.stringify({ systemInstruction: { role: 'user', parts: [{ text: systemPrompt }] }, contents: [{ role: 'user', parts: [{ text: userText }] }] }),
         })
         if (res.ok) {
           const d = await res.json()
           return { content: d.candidates?.[0]?.content?.parts?.[0]?.text || 'Sem resposta', model: 'gemini-2.0-flash' }
         }
+        console.warn('[callAI] Google respondeu erro:', await res.text())
       } catch (e) { console.warn('[callAI] Falha no provedor google:', e) }
       return null
     }
@@ -486,6 +489,7 @@ export default function Morpheus() {
           const d = await res.json()
           return { content: d.choices?.[0]?.message?.content || 'Sem resposta', model: modelName }
         }
+        console.warn('[callAI] OpenRouter respondeu erro:', await res.text())
       } catch (e) { console.warn('[callAI] Falha no provedor openrouter:', e) }
       return null
     }
@@ -502,6 +506,7 @@ export default function Morpheus() {
           const d = await res.json()
           return { content: d.choices?.[0]?.message?.content || 'Sem resposta', model: modelo }
         }
+        console.warn('[callAI] Groq respondeu erro:', await res.text())
       } catch (e) { console.warn('[callAI] Falha no provedor groq:', e) }
       return null
     }

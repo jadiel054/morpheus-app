@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { X } from 'lucide-react'
+const CLAUDE_MODEL_ID = 'claude-sonnet-4-5-20250929'
 
 function getNested(obj, path) {
   return path.split('.').reduce((o, k) => (o && o[k] !== undefined) ? o[k] : '', obj)
@@ -56,8 +57,10 @@ async function testLLMProvider(provider) {
       },
       anthropic: {
         key: i.claude?.key || i.anthropic?.key,
-        url: 'https://api.anthropic.com/v1/models',
-        headers: (key) => ({ 'x-api-key': key, 'anthropic-version': '2023-06-01' }),
+        url: 'https://api.anthropic.com/v1/messages',
+        method: 'POST',
+        headers: (key) => ({ 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' }),
+        body: () => JSON.stringify({ model: CLAUDE_MODEL_ID, max_tokens: 4, messages: [{ role: 'user', content: 'ping' }] }),
       },
       openai: {
         key: i.openai?.key,
@@ -66,14 +69,21 @@ async function testLLMProvider(provider) {
       },
       google: {
         key: i.gemini?.key || i.google?.key,
-        url: (key) => `https://generativelanguage.googleapis.com/v1beta/models?key=${key}`,
-        headers: () => ({}),
+        url: (key) => `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${key}`,
+        method: 'POST',
+        headers: () => ({ 'Content-Type': 'application/json' }),
+        body: () => JSON.stringify({
+          systemInstruction: { role: 'user', parts: [{ text: 'Teste de autenticacao' }] },
+          contents: [{ role: 'user', parts: [{ text: 'ping' }] }],
+        }),
       },
     }[provider]
     if (!config?.key) return { ok: false, error: 'Key nao configurada' }
     const url = typeof config.url === 'function' ? config.url(config.key) : config.url
     const r = await fetch(url, {
-      headers: config.headers(config.key)
+      method: config.method || 'GET',
+      headers: config.headers(config.key),
+      body: config.body ? config.body(config.key) : undefined,
     })
     return r.ok ? { ok: true, detail: 'Conectado' } : { ok: false, error: `HTTP ${r.status}` }
   } catch (e) { return { ok: false, error: e.message } }

@@ -6,6 +6,67 @@ import { useKokoroTTS } from './useKokoroTTS'
 import { KokoroDownloadManager } from './KokoroDownloadManager'
 import { testGitHubTokenScopes } from '../../lib/errorHandler'
 const TABS = ['Perfil', 'Voz', 'IA', 'Integracoes', 'Seguranca']
+const CLAUDE_MODEL_ID = 'claude-sonnet-4-5-20250929'
+
+async function testarProviderIA(provider, key) {
+  try {
+    if (!key || key.length < 10) return false
+
+    if (provider === 'groq') {
+      const r = await fetch('https://api.groq.com/openai/v1/models', {
+        headers: { Authorization: `Bearer ${key}` },
+      })
+      return r.ok
+    }
+
+    if (provider === 'openrouter') {
+      const r = await fetch('https://openrouter.ai/api/v1/models', {
+        headers: { Authorization: `Bearer ${key}` },
+      })
+      return r.ok
+    }
+
+    if (provider === 'openai') {
+      const r = await fetch('https://api.openai.com/v1/models', {
+        headers: { Authorization: `Bearer ${key}` },
+      })
+      return r.ok
+    }
+
+    if (provider === 'claude') {
+      const r = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': key,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: CLAUDE_MODEL_ID,
+          max_tokens: 4,
+          messages: [{ role: 'user', content: 'ping' }],
+        }),
+      })
+      return r.ok
+    }
+
+    if (provider === 'gemini') {
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${key}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          systemInstruction: { role: 'user', parts: [{ text: 'Teste de autenticacao' }] },
+          contents: [{ role: 'user', parts: [{ text: 'ping' }] }],
+        }),
+      })
+      return r.ok
+    }
+
+    return false
+  } catch {
+    return false
+  }
+}
 
 const IntegrationsContext = createContext(null)
 const STORAGE_KEY = 'morpheus_integrations'
@@ -119,14 +180,20 @@ export function SettingsPanel({ settings, onUpdate, onClose, initialIntegrations
             <div style={{ marginTop: '16px' }}><button onClick={handleTestVoice} disabled={testingVoice} style={{ width:'100%',padding:'12px',background:testingVoice?'rgba(0,255,255,0.15)':'transparent',border:'1px solid rgba(0,255,255,0.3)',borderRadius:'8px',color:'#00FFFF',fontFamily:'monospace',fontSize:'13px',cursor:testingVoice?'not-allowed':'pointer',letterSpacing:'1px' }}>{testingVoice ? 'TOCANDO...' : 'TESTAR VOZ'}</button></div>
           </div>}
           {activeTab === 'IA' && <div className="space-y-4">
-            <div><label className="text-xs opacity-60">Modelo AI</label><select className="w-full bg-dark-bg border border-dark-border rounded px-3 py-2 text-sm text-cyan mt-1 font-mono" value={localSettings.ai_model || 'auto'} onChange={e => updateLocal({ ai_model: e.target.value })}><option value="auto">Auto (primeira chave valida disponível)</option><option value="groq_llama">Groq Llama 3.3 70B</option><option value="groq_mixtral">Groq Mixtral 8x7B</option><option value="anthropic_claude_sonnet">Claude 3.5 Sonnet</option><option value="openrouter_deepseek">DeepSeek R1 (OpenRouter)</option><option value="openrouter_qwen">Qwen Coder (OpenRouter)</option><option value="openrouter_glm">GLM-4 (OpenRouter)</option><option value="google_gemini_flash">Gemini Flash (Google)</option><option value="openai_gpt4o">OpenAI GPT-4o</option></select></div>
+            <div><label className="text-xs opacity-60">Modelo AI</label><select className="w-full bg-dark-bg border border-dark-border rounded px-3 py-2 text-sm text-cyan mt-1 font-mono" value={localSettings.ai_model || 'auto'} onChange={e => updateLocal({ ai_model: e.target.value })}><option value="auto">Auto (primeira chave valida disponível)</option><option value="groq_llama">Groq Llama 3.3 70B</option><option value="groq_mixtral">Groq Mixtral 8x7B</option><option value="anthropic_claude_sonnet">Claude Sonnet 4.5</option><option value="openrouter_deepseek">DeepSeek R1 (OpenRouter)</option><option value="openrouter_qwen">Qwen Coder (OpenRouter)</option><option value="openrouter_glm">GLM-4 (OpenRouter)</option><option value="google_gemini_flash">Gemini Flash (Google)</option><option value="openai_gpt4o">OpenAI GPT-4o</option></select></div>
             <div><label className="text-xs opacity-60">Nivel de Sarcasmo ({localSettings.sarcasm_level || 30}%)</label><input type="range" min="0" max="100" className="w-full mt-1" value={localSettings.sarcasm_level || 30} onChange={e => updateLocal({ sarcasm_level: parseInt(e.target.value) })} /></div>
           </div>}
           {activeTab === 'Integracoes' && <IntegrationsContext.Provider value={{ integrations, setIntegrations }}><div className="space-y-4">
             <IntegrationSection title="IA PROVIDERS">
-              {['groq','openrouter','deepseek','gemini','openai','claude'].map(key => (
-                <IntegrationField key={key} label={`${key.toUpperCase()} API Key`} placeholder="sk-..." storeKey={`${key}.key`}
-                  testFn={async (k) => { const eps={groq:'https://api.groq.com/openai/v1/models',openrouter:'https://openrouter.ai/api/v1/models',openai:'https://api.openai.com/v1/models'};const url=eps[key];if(!url)return k.length>10;try{const r=await fetch(url,{headers:{Authorization:`Bearer ${k}`}});return r.ok}catch{return false} }}
+              {[
+                { key: 'groq', label: 'Groq API Key' },
+                { key: 'openrouter', label: 'OpenRouter API Key (DeepSeek/Qwen/GLM-4)' },
+                { key: 'gemini', label: 'Google Gemini API Key' },
+                { key: 'openai', label: 'OpenAI API Key' },
+                { key: 'claude', label: 'Anthropic API Key (Claude)' },
+              ].map(({ key, label }) => (
+                <IntegrationField key={key} label={label} placeholder="sk-..." storeKey={`${key}.key`}
+                  testFn={(k) => testarProviderIA(key, k)}
                 />
               ))}
             </IntegrationSection>

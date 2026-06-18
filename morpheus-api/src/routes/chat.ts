@@ -325,7 +325,7 @@ async function chamarModelo(
               }
             : modelo.provider === 'google'
               ? {
-                  system_instruction: { parts: [{ text: String(conversation.find((item) => item.role === 'system')?.content || '') }] },
+                  systemInstruction: { role: 'user', parts: [{ text: String(conversation.find((item) => item.role === 'system')?.content || '') }] },
                   contents: conversation
                     .filter((item) => item.role !== 'system')
                     .map((item) => ({ role: item.role === 'assistant' ? 'model' : 'user', parts: [{ text: String(item.content || '') }] })),

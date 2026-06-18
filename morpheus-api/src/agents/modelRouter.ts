@@ -57,7 +57,7 @@ export const MODELOS: Record<string, ModeloConfig> = {
     uso: 'modelo alternativo OpenRouter',
   },
   anthropic_claude_sonnet: {
-    id: 'claude-3-5-sonnet-20241022',
+    id: 'claude-sonnet-4-5-20250929',
     provider: 'anthropic',
     suportaTools: false,
     temperatura: 0.3,

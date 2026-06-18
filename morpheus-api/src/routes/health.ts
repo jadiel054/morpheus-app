@@ -10,6 +10,8 @@ type CheckResultado = {
   error?: string
 }
 
+const CLAUDE_MODEL_ID = 'claude-sonnet-4-5-20250929'
+
 function obterSupabaseConfig() {
   return {
     url: process.env.SUPABASE_URL,
@@ -22,6 +24,7 @@ async function verificarEndpoint(
   url: string,
   token?: string,
   headersExtras: Record<string, string> = {},
+  body?: string,
 ): Promise<[string, CheckResultado]> {
   const headers = token
     ? { Authorization: `Bearer ${token}`, ...headersExtras }
@@ -34,7 +37,9 @@ async function verificarEndpoint(
   try {
     const inicio = Date.now()
     const resposta = await fetch(url, {
+      method: body ? 'POST' : 'GET',
       headers,
+      body,
     })
 
     return [nome, resposta.ok
@@ -83,23 +88,33 @@ router.get('/', async (_req: Request, res: Response) => {
     verificarEndpoint('openrouter', 'https://openrouter.ai/api/v1/models', process.env.OPENROUTER_API_KEY),
     verificarEndpoint(
       'anthropic',
-      'https://api.anthropic.com/v1/models',
+      'https://api.anthropic.com/v1/messages',
       undefined,
       (process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY)
         ? {
             'x-api-key': process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY || '',
             'anthropic-version': '2023-06-01',
+            'Content-Type': 'application/json',
           }
         : {},
+      (process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY)
+        ? JSON.stringify({ model: CLAUDE_MODEL_ID, max_tokens: 4, messages: [{ role: 'user', content: 'ping' }] })
+        : undefined,
     ),
     verificarEndpoint('openai', 'https://api.openai.com/v1/models', process.env.OPENAI_API_KEY),
     verificarEndpoint(
       'google',
-      `https://generativelanguage.googleapis.com/v1beta/models?key=${process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || ''}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || ''}`,
       undefined,
       (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY)
         ? { 'Content-Type': 'application/json' }
         : {},
+      (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY)
+        ? JSON.stringify({
+            systemInstruction: { role: 'user', parts: [{ text: 'Teste de autenticacao' }] },
+            contents: [{ role: 'user', parts: [{ text: 'ping' }] }],
+          })
+        : undefined,
     ),
   ])
 
