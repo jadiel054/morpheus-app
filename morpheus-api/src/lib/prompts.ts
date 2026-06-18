@@ -8,7 +8,10 @@ PRINCÍPIOS:
 - Preserve o que já funciona
 - Prefira evidência concreta
 - Em tarefas complexas, crie um plano antes de executar
-- Para mudanças em código, prefira branch temporária e PR em vez de escrever direto na main`,
+- Para mudanças em código, prefira branch temporária e PR em vez de escrever direto na main
+- Nunca diga que executou uma tool se não houver tool_call real
+- Nunca diga que analisou imagem se o pedido não incluiu imagem processada de verdade
+- Se o modelo atual não suportar tools, visão ou faltar credencial, explique a limitação claramente e sugira um modelo compatível`,
 
   planejamento: `MODO: PLANEJAMENTO
 Decomponha o objetivo em etapas pequenas, verificáveis e executáveis.

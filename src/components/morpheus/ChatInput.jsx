@@ -208,7 +208,7 @@ export function ChatInput({ onSend, isLoading, isListening, onToggleMic, isSpeak
           <option value="openrouter_qwen">QWEN CODER</option>
           <option value="openrouter_glm">GLM-4</option>
           <option value="google_gemini_flash">GEMINI FLASH</option>
-          <option value="openai_gpt4o">GPT-4O MINI</option>
+          <option value="openai_gpt4o">GPT-4O</option>
         </select>
 
         <button

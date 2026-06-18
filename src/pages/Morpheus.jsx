@@ -541,7 +541,7 @@ export default function Morpheus() {
       const content = buildContentWithAttachments(fullPrompt, files)
       const history = activeTab.messages.slice(-10).map(m => ({ role: m.role, content: m.content }))
       addStep('Chamando LLM...')
-      const result = await callAI(systemPrompt, typeof content === 'string' ? content : content.map(p => p.type === 'text' ? p.text : '').join('\n'), history)
+      const result = await callAI(systemPrompt, content, history)
       completeLastStep('Modelo: ' + (result.model || 'unknown'))
       const assistantMsg = { role: 'assistant', content: result.content, timestamp: Date.now(), model: result.model }
       updateActiveTab(tab => { const updated = { ...tab, messages: [...tab.messages, assistantMsg] }; saveConversation(updated); return updated })

@@ -2,7 +2,9 @@ export const MODELOS = {
   groq_llama: {
     id: 'llama-3.3-70b-versatile',
     provider: 'groq',
+    nome: 'Groq Llama 3.3 70B',
     suportaTools: true,
+    suportaVisao: false,
     temperatura: 0.3,
     maxTokens: 8192,
     uso: 'velocidade, tarefas gerais, respostas rápidas',
@@ -10,7 +12,9 @@ export const MODELOS = {
   groq_mixtral: {
     id: 'mixtral-8x7b-32768',
     provider: 'groq',
-    suportaTools: true,
+    nome: 'Groq Mixtral 8x7B',
+    suportaTools: false,
+    suportaVisao: false,
     temperatura: 0.4,
     maxTokens: 32768,
     uso: 'contexto longo, análise de arquivos grandes',
@@ -18,7 +22,9 @@ export const MODELOS = {
   openrouter_qwen: {
     id: 'qwen/qwen-2.5-coder-32b-instruct',
     provider: 'openrouter',
+    nome: 'Qwen Coder (OpenRouter)',
     suportaTools: true,
+    suportaVisao: false,
     temperatura: 0.2,
     maxTokens: 8192,
     uso: 'codificação especializada, refatoração',
@@ -26,7 +32,9 @@ export const MODELOS = {
   openrouter_deepseek: {
     id: 'deepseek/deepseek-r1',
     provider: 'openrouter',
-    suportaTools: false,
+    nome: 'DeepSeek R1 (OpenRouter)',
+    suportaTools: true,
+    suportaVisao: false,
     temperatura: 0.1,
     maxTokens: 8192,
     uso: 'raciocínio complexo, debugging difícil',
@@ -34,7 +42,9 @@ export const MODELOS = {
   openrouter_gemini: {
     id: 'google/gemini-flash-1.5',
     provider: 'openrouter',
+    nome: 'Gemini Flash 1.5 (OpenRouter)',
     suportaTools: true,
+    suportaVisao: true,
     temperatura: 0.5,
     maxTokens: 8192,
     uso: 'análise multimodal',
@@ -42,7 +52,9 @@ export const MODELOS = {
   openrouter_glm: {
     id: 'thudm/glm-4-9b',
     provider: 'openrouter',
+    nome: 'GLM-4 9B (OpenRouter)',
     suportaTools: false,
+    suportaVisao: false,
     temperatura: 0.3,
     maxTokens: 4096,
     uso: 'modelo alternativo OpenRouter',
@@ -50,15 +62,19 @@ export const MODELOS = {
   anthropic_claude_sonnet: {
     id: 'claude-sonnet-4-5-20250929',
     provider: 'anthropic',
-    suportaTools: false,
+    nome: 'Claude Sonnet 4.5',
+    suportaTools: true,
+    suportaVisao: true,
     temperatura: 0.3,
     maxTokens: 8192,
     uso: 'escrita, análise ampla e instruções complexas',
   },
   openai_gpt4o: {
-    id: 'gpt-4o-mini',
+    id: 'gpt-4o',
     provider: 'openai',
-    suportaTools: false,
+    nome: 'OpenAI GPT-4o',
+    suportaTools: true,
+    suportaVisao: true,
     temperatura: 0.3,
     maxTokens: 8192,
     uso: 'tarefas gerais com OpenAI',
@@ -66,7 +82,9 @@ export const MODELOS = {
   google_gemini_flash: {
     id: 'gemini-2.0-flash',
     provider: 'google',
-    suportaTools: false,
+    nome: 'Gemini 2.0 Flash',
+    suportaTools: true,
+    suportaVisao: true,
     temperatura: 0.4,
     maxTokens: 8192,
     uso: 'velocidade alta via Google Gemini',
@@ -121,6 +139,11 @@ const ALIAS_MODELOS = {
 export function melhorModeloComTools() {
   return Object.values(MODELOS)
     .find((modelo) => modelo.suportaTools)
+}
+
+export function modelosComCapacidade(capacidade) {
+  return Object.values(MODELOS)
+    .filter((modelo) => capacidade === 'tools' ? modelo.suportaTools : modelo.suportaVisao)
 }
 
 export function normalizarProvider(chave) {

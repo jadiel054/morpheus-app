@@ -40,6 +40,23 @@ Versão atualizada com health check real do backend, validação de tools com Zo
 - mudanças autônomas de código agora priorizam `branch temporária + PR` em vez de escrita direta na `main`
 - SQL de apoio criado em `sql/morpheus_plans.sql` e `sql/morpheus_reflections.sql`
 
+## Matriz de capacidades
+
+| Modelo | ID configurado | Tools | Visão | Comportamento no MORPHEUS |
+|--------|----------------|-------|-------|----------------------------|
+| Groq Llama 3.3 70B | `llama-3.3-70b-versatile` | Sim | Não | Recebe `tools` em formato OpenAI compatível |
+| Groq Mixtral 8x7B | `mixtral-8x7b-32768` | Não | Não | Nunca deve simular tool call; responde com limitação clara |
+| Claude Sonnet 4.5 | `claude-sonnet-4-5-20250929` | Sim | Sim | Recebe `tools` no formato da Messages API e imagens em blocos `image` |
+| DeepSeek R1 (OpenRouter) | `deepseek/deepseek-r1` | Sim | Não | Recebe `tools` via OpenRouter quando o modelo/provedor expõe suporte; não recebe imagens |
+| Qwen Coder (OpenRouter) | `qwen/qwen-2.5-coder-32b-instruct` | Sim | Não | Recebe `tools` via OpenRouter; não recebe imagens |
+| GLM-4 9B (OpenRouter) | `thudm/glm-4-9b` | Não | Não | Nunca deve simular tool call ou visão; responde com limitação clara |
+| Gemini Flash (Google) | `gemini-2.0-flash` | Sim | Sim | Recebe `functionDeclarations` e imagens inline no `generateContent` |
+| OpenAI GPT-4o | `gpt-4o` | Sim | Sim | Recebe `tools` e partes multimodais no formato Chat Completions |
+
+- Se o modelo atual não suportar `tools`, o backend devolve mensagem específica orientando trocar para um modelo compatível.
+- Se houver imagem anexada e o modelo atual não suportar visão, o backend devolve mensagem específica em vez de descartar a imagem silenciosamente.
+- `gemini-2.0-flash` continua listado por compatibilidade, mas é um modelo depreciado pelo Google e deve ser migrado em manutenção futura.
+
 ## Deploy
 
 - Frontend atual: `https://morpheus-app-six.vercel.app`

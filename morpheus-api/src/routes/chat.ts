@@ -6,6 +6,7 @@ import { podeExecutar, registrarSucesso, registrarFalha } from '../lib/circuitBr
 import { montarPrompt } from '../lib/prompts.js'
 import {
   MODELOS,
+  type ModeloConfig,
   rotearModelo,
   cadeiaDeFallback,
   resolverModelo,
@@ -23,6 +24,18 @@ const RETRY_DELAY = 1000
 const MAX_LLM_ATTEMPTS = 3
 const MAX_BUDGET_TOKENS = 100_000
 const GITHUB_DEFAULT_OWNER = process.env.GITHUB_OWNER || 'jadiel054'
+
+type Provider = 'groq' | 'openrouter' | 'anthropic' | 'openai' | 'google'
+type TextPart = { type: 'text', text: string }
+type ImagePart = { type: 'image_url', image_url: { url: string, detail?: string } }
+type MessagePart = TextPart | ImagePart
+type ConversationMessage = {
+  role: 'system' | 'user' | 'assistant' | 'tool'
+  content: string | MessagePart[] | null
+  tool_calls?: Array<{ id: string, function: { name: string, arguments: string } }>
+  tool_call_id?: string
+  name?: string
+}
 
 const READ_ONLY_TOOLS = [
   'github_list_repos',
@@ -198,7 +211,99 @@ function normalizeApiKey(value: unknown) {
   return String(value || '').trim()
 }
 
-function compactHistory(history: Array<Record<string, unknown>>) {
+function extrairTextoConteudo(content: unknown) {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return content
+    .filter((part): part is TextPart => Boolean(part) && typeof part === 'object' && (part as TextPart).type === 'text')
+    .map((part) => String(part.text || ''))
+    .join('\n')
+    .trim()
+}
+
+function contemImagem(content: unknown) {
+  return Array.isArray(content) && content.some((part) => (part as ImagePart)?.type === 'image_url' && Boolean((part as ImagePart)?.image_url?.url))
+}
+
+function mensagensContemImagem(messages: Array<ConversationMessage>) {
+  return messages.some((message) => contemImagem(message.content))
+}
+
+function ultimaMensagemTexto(messages: Array<ConversationMessage>) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === 'user') {
+      return extrairTextoConteudo(messages[index].content)
+    }
+  }
+  return ''
+}
+
+function parseDataUrl(url: string) {
+  const match = url.match(/^data:(.+?);base64,(.+)$/)
+  if (!match) return null
+  return { mimeType: match[1], data: match[2] }
+}
+
+function parseToolResult(content: string) {
+  try {
+    return JSON.parse(content)
+  } catch {
+    return content
+  }
+}
+
+function tarefaProvavelmenteExigeTools(userMessage: string) {
+  const msg = userMessage.toLowerCase()
+  return /github|reposit[oó]rio|repo\b|arquivo\b|file\b|commit\b|pull request|branch\b|supabase|tabela\b|banco de dados|web search|busca na web|pesquise|pesquisar|not[ií]cia atual|dados atuais|deploy|vercel|render|tool\b|ferramenta\b/.test(msg)
+}
+
+function respostaPareceSimularTool(texto: string) {
+  const msg = texto.toLowerCase()
+  return /\b(execu(te|tei|tamos)|usei|utilizei|chamei|rodei|acionei)\b.*\b(tool|ferramenta|github|supabase|web search|busca)\b/.test(msg)
+    || /tool\s+call|tool_result|github_list_repos|github_read_file|github_list_files|supabase_query|web_search/.test(msg)
+}
+
+function nomesModelosComCapacidade(capacidade: 'tools' | 'visao', provider?: Provider) {
+  return Object.values(MODELOS)
+    .filter((modelo) => (capacidade === 'tools' ? modelo.suportaTools : modelo.suportaVisao))
+    .filter((modelo) => !provider || modelo.provider === provider)
+    .map((modelo) => modelo.nome)
+}
+
+function montarMensagemLimitacao(
+  tipo: 'tools' | 'visao',
+  modelo: ModeloConfig,
+  userMessage = '',
+) {
+  const opcoesMesmoProvider = nomesModelosComCapacidade(tipo, modelo.provider)
+  const opcoesGerais = nomesModelosComCapacidade(tipo)
+  const sugestoes = (opcoesMesmoProvider.length ? opcoesMesmoProvider : opcoesGerais)
+    .filter((nome) => nome !== modelo.nome)
+    .slice(0, 4)
+
+  const complementoPrompt = tipo === 'tools' && userMessage
+    ? ` Pedido detectado: "${userMessage.slice(0, 160)}".`
+    : ''
+
+  const acao = tipo === 'tools'
+    ? 'executar tools reais'
+    : 'analisar imagens'
+
+  const sugestaoTexto = sugestoes.length
+    ? ` Sugestão: troque para ${sugestoes.join(', ')}.`
+    : ''
+
+  return `[MORPHEUS] O modelo atual (${modelo.nome}) não suporta ${acao}.${complementoPrompt}${sugestaoTexto}`
+}
+
+function normalizarMensagensEntrada(messages: Array<{ role: string, content: string | MessagePart[] | null }>) {
+  return messages.map((message) => ({
+    role: message.role === 'assistant' ? 'assistant' : message.role === 'system' ? 'system' : message.role === 'tool' ? 'tool' : 'user',
+    content: message.content,
+  })) as ConversationMessage[]
+}
+
+function compactHistory(history: Array<ConversationMessage>) {
   const systemMessages = history.filter((item) => item.role === 'system')
   const recentMessages = history.filter((item) => item.role !== 'system').slice(-20)
   return [...systemMessages, ...recentMessages]
@@ -336,9 +441,247 @@ function extrairMensagemErroProvider(
   return `${providerLabel}: ${details}`
 }
 
+function converterToolsParaAnthropic(tools: typeof TOOL_DEFINITIONS) {
+  return tools.map((tool) => ({
+    name: tool.function.name,
+    description: tool.function.description,
+    input_schema: tool.function.parameters,
+  }))
+}
+
+function converterToolsParaGemini(tools: typeof TOOL_DEFINITIONS) {
+  return [{
+    functionDeclarations: tools.map((tool) => ({
+      name: tool.function.name,
+      description: tool.function.description,
+      parameters: tool.function.parameters,
+    })),
+  }]
+}
+
+function converterConteudoParaAnthropic(content: string | MessagePart[] | null): Array<Record<string, unknown>> {
+  if (!Array.isArray(content)) {
+    const text = String(content || '').trim()
+    return text ? [{ type: 'text', text }] : []
+  }
+
+  const parts: Array<Record<string, unknown>> = []
+  for (const part of content) {
+    if (part.type === 'text' && part.text?.trim()) {
+      parts.push({ type: 'text', text: part.text })
+      continue
+    }
+
+    if (part.type === 'image_url' && part.image_url?.url) {
+      const dataUrl = parseDataUrl(part.image_url.url)
+      if (dataUrl) {
+        parts.push({
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: dataUrl.mimeType,
+            data: dataUrl.data,
+          },
+        })
+      } else {
+        parts.push({
+          type: 'image',
+          source: {
+            type: 'url',
+            url: part.image_url.url,
+          },
+        })
+      }
+    }
+  }
+
+  return parts
+}
+
+function converterConversationParaAnthropic(conversation: Array<ConversationMessage>): Array<Record<string, unknown>> {
+  return conversation
+    .filter((item) => item.role !== 'system')
+    .map((item) => {
+      if (item.role === 'tool') {
+        return {
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: item.tool_call_id,
+            content: String(item.content || ''),
+          }],
+        }
+      }
+
+      if (item.role === 'assistant' && item.tool_calls?.length) {
+        const content = converterConteudoParaAnthropic(item.content)
+        for (const toolCall of item.tool_calls) {
+          content.push({
+            type: 'tool_use',
+            id: toolCall.id,
+            name: toolCall.function.name,
+            input: safeJsonParse(toolCall.function.arguments, {}),
+          })
+        }
+        return {
+          role: 'assistant',
+          content,
+        }
+      }
+
+      return {
+        role: item.role === 'assistant' ? 'assistant' : 'user',
+        content: converterConteudoParaAnthropic(item.content),
+      }
+    })
+}
+
+function converterParteParaGemini(part: MessagePart): Record<string, unknown> | null {
+  if (part.type === 'text') {
+    return part.text?.trim() ? { text: part.text } : null
+  }
+
+  const dataUrl = parseDataUrl(part.image_url?.url || '')
+  if (dataUrl) {
+    return {
+      inline_data: {
+        mime_type: dataUrl.mimeType,
+        data: dataUrl.data,
+      },
+    }
+  }
+
+  return {
+    file_data: {
+      mime_type: 'image/*',
+      file_uri: part.image_url.url,
+    },
+  }
+}
+
+function converterConversationParaGemini(conversation: Array<ConversationMessage>): Array<Record<string, unknown>> {
+  return conversation
+    .filter((item) => item.role !== 'system')
+    .map((item) => {
+      if (item.role === 'tool') {
+        return {
+          role: 'user',
+          parts: [{
+            functionResponse: {
+              name: item.name || '',
+              response: {
+                result: parseToolResult(String(item.content || '')),
+              },
+              ...(item.tool_call_id ? { id: item.tool_call_id } : {}),
+            },
+          }],
+        }
+      }
+
+      const parts = Array.isArray(item.content)
+        ? item.content.map(converterParteParaGemini).filter(Boolean)
+        : String(item.content || '').trim()
+          ? [{ text: String(item.content || '') }]
+          : []
+
+      if (item.role === 'assistant' && item.tool_calls?.length) {
+        const toolParts = item.tool_calls.map((toolCall) => ({
+          functionCall: {
+            name: toolCall.function.name,
+            args: safeJsonParse(toolCall.function.arguments, {}),
+            id: toolCall.id,
+          },
+        }))
+
+        return {
+          role: 'model',
+          parts: [...parts, ...toolParts],
+        }
+      }
+
+      return {
+        role: item.role === 'assistant' ? 'model' : 'user',
+        parts,
+      }
+    })
+}
+
+function extrairRespostaAnthropic(data: Record<string, unknown>) {
+  const blocks = Array.isArray(data.content) ? data.content as Array<Record<string, unknown>> : []
+  const text = blocks
+    .filter((block) => block.type === 'text')
+    .map((block) => String(block.text || ''))
+    .join('\n')
+    .trim()
+  const toolCalls = blocks
+    .filter((block) => block.type === 'tool_use')
+    .map((block) => ({
+      id: String(block.id || crypto.randomUUID()),
+      function: {
+        name: String(block.name || ''),
+        arguments: JSON.stringify(block.input || {}),
+      },
+    }))
+
+  return {
+    choices: [{
+      finish_reason: toolCalls.length ? 'tool_calls' : 'stop',
+      message: {
+        content: text,
+        ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
+      },
+    }],
+    usage: {
+      total_tokens: Number(data.usage && typeof data.usage === 'object'
+        ? (data.usage as Record<string, unknown>).input_tokens || 0
+        : 0) + Number(data.usage && typeof data.usage === 'object'
+        ? (data.usage as Record<string, unknown>).output_tokens || 0
+        : 0),
+    },
+  }
+}
+
+function extrairRespostaGemini(data: Record<string, unknown>) {
+  const candidate = Array.isArray(data.candidates) ? data.candidates[0] as Record<string, unknown> : null
+  const content = candidate?.content as Record<string, unknown> | undefined
+  const parts = Array.isArray(content?.parts) ? content?.parts as Array<Record<string, unknown>> : []
+  const texto = parts
+    .filter((part) => typeof part.text === 'string')
+    .map((part) => String(part.text || ''))
+    .join('\n')
+    .trim()
+  const toolCalls = parts
+    .filter((part) => part.functionCall && typeof part.functionCall === 'object')
+    .map((part) => {
+      const functionCall = part.functionCall as Record<string, unknown>
+      return {
+        id: String(functionCall.id || crypto.randomUUID()),
+        function: {
+          name: String(functionCall.name || ''),
+          arguments: JSON.stringify(functionCall.args || {}),
+        },
+      }
+    })
+
+  return {
+    choices: [{
+      finish_reason: toolCalls.length ? 'tool_calls' : 'stop',
+      message: {
+        content: texto,
+        ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
+      },
+    }],
+    usage: {
+      total_tokens: Number(data.usageMetadata && typeof data.usageMetadata === 'object'
+        ? (data.usageMetadata as Record<string, unknown>).totalTokenCount || 0
+        : 0),
+    },
+  }
+}
+
 async function chamarModelo(
-  modelo: { id: string, provider: 'groq' | 'openrouter' | 'anthropic' | 'openai' | 'google', suportaTools: boolean, temperatura: number, maxTokens: number },
-  conversation: Array<Record<string, unknown>>,
+  modelo: ModeloConfig,
+  conversation: Array<ConversationMessage>,
   tools: typeof TOOL_DEFINITIONS,
   apiKeys: Record<string, string> | undefined,
 ) {
@@ -359,17 +702,16 @@ async function chamarModelo(
             ? {
                 model: modelo.id,
                 max_tokens: Math.min(modelo.maxTokens, 4096),
-                system: String(conversation.find((item) => item.role === 'system')?.content || ''),
-                messages: conversation
-                  .filter((item) => item.role !== 'system')
-                  .map((item) => ({ role: item.role === 'assistant' ? 'assistant' : 'user', content: item.content })),
+                system: extrairTextoConteudo(conversation.find((item) => item.role === 'system')?.content || ''),
+                messages: converterConversationParaAnthropic(conversation),
+                tools: modelo.suportaTools ? converterToolsParaAnthropic(tools) : undefined,
               }
             : modelo.provider === 'google'
               ? {
-                  systemInstruction: { role: 'user', parts: [{ text: String(conversation.find((item) => item.role === 'system')?.content || '') }] },
-                  contents: conversation
-                    .filter((item) => item.role !== 'system')
-                    .map((item) => ({ role: item.role === 'assistant' ? 'model' : 'user', parts: [{ text: String(item.content || '') }] })),
+                  systemInstruction: { role: 'user', parts: [{ text: extrairTextoConteudo(conversation.find((item) => item.role === 'system')?.content || '') }] },
+                  contents: converterConversationParaGemini(conversation),
+                  tools: modelo.suportaTools ? converterToolsParaGemini(tools) : undefined,
+                  toolConfig: modelo.suportaTools ? { functionCallingConfig: { mode: 'AUTO' } } : undefined,
                 }
               : {
                   model: modelo.id,
@@ -395,17 +737,11 @@ async function chamarModelo(
       const data = await response.json()
 
       if (modelo.provider === 'anthropic') {
-        return {
-          choices: [{ finish_reason: 'stop', message: { content: data.content?.[0]?.text || '' } }],
-          usage: { total_tokens: data.usage?.input_tokens ? data.usage.input_tokens + (data.usage?.output_tokens || 0) : 0 },
-        }
+        return extrairRespostaAnthropic(data as Record<string, unknown>)
       }
 
       if (modelo.provider === 'google') {
-        return {
-          choices: [{ finish_reason: 'stop', message: { content: data.candidates?.[0]?.content?.parts?.[0]?.text || '' } }],
-          usage: { total_tokens: data.usageMetadata?.totalTokenCount || 0 },
-        }
+        return extrairRespostaGemini(data as Record<string, unknown>)
       }
 
       return data
@@ -419,8 +755,8 @@ async function chamarModelo(
 }
 
 async function chamarComFallback(
-  modeloInicial: { id: string, provider: 'groq' | 'openrouter' | 'anthropic' | 'openai' | 'google', suportaTools: boolean, temperatura: number, maxTokens: number },
-  conversation: Array<Record<string, unknown>>,
+  modeloInicial: ModeloConfig,
+  conversation: Array<ConversationMessage>,
   tools: typeof TOOL_DEFINITIONS,
   apiKeys: Record<string, string> | undefined,
   sendEvent: (type: string, data: Record<string, unknown>) => void,
@@ -492,7 +828,7 @@ async function executarToolComCircuito(nomeTool: string, executor: () => Promise
 
 router.post('/', authenticate, async (req: Request, res: Response) => {
   const { messages, apiKeys, model, conversationId, providerOrder: providerOrderBody } = req.body as {
-    messages?: Array<{ role: string, content: string }>
+    messages?: Array<{ role: string, content: string | MessagePart[] | null }>
     apiKeys?: Record<string, string>
     model?: string
     conversationId?: string
@@ -513,7 +849,8 @@ router.post('/', authenticate, async (req: Request, res: Response) => {
   }
   const sendDone = () => res.write('event: done\ndata: {}\n\n')
 
-  const ultimaMensagem = messages[messages.length - 1]?.content || ''
+  const mensagensNormalizadas = normalizarMensagensEntrada(messages)
+  const ultimaMensagem = ultimaMensagemTexto(mensagensNormalizadas)
   const effortLevel = selectEffortLevel(ultimaMensagem)
   const tipoTarefa = inferirTipoTarefa(ultimaMensagem)
   const providerOrder = extrairProviderOrderDisponivel(apiKeys, providerOrderBody)
@@ -522,10 +859,10 @@ router.post('/', authenticate, async (req: Request, res: Response) => {
   const planner = new PlannerEngine(conversationId || crypto.randomUUID())
   const reflector = new ReflectorEngine()
 
-  const contextoSistema = montarPrompt('planejamento', `Tipo de tarefa: ${tipoTarefa}`)
-  let conversation: Array<Record<string, unknown>> = [
+  const contextoSistema = montarPrompt('planejamento', `Tipo de tarefa: ${tipoTarefa}\nSe o modelo atual não suportar tools ou visão para concluir a tarefa, explique isso claramente e sugira um modelo compatível.`)
+  let conversation: Array<ConversationMessage> = [
     { role: 'system', content: contextoSistema },
-    ...messages,
+    ...mensagensNormalizadas,
   ]
   let loopCount = 0
   let totalTokensUsed = 0
@@ -535,6 +872,14 @@ router.post('/', authenticate, async (req: Request, res: Response) => {
   try {
     if (!modeloInicial) {
       throw new Error('Nenhum LLM configurado. Adicione uma API key compatível em Integracoes.')
+    }
+
+    if (mensagensContemImagem(mensagensNormalizadas) && !modeloInicial.suportaVisao) {
+      throw new Error(montarMensagemLimitacao('visao', modeloInicial))
+    }
+
+    if (tarefaProvavelmenteExigeTools(ultimaMensagem) && !modeloInicial.suportaTools) {
+      throw new Error(montarMensagemLimitacao('tools', modeloInicial, ultimaMensagem))
     }
 
     sendEvent('plan', {
@@ -847,14 +1192,17 @@ router.post('/', authenticate, async (req: Request, res: Response) => {
           }
         }
 
-        conversation.push({ role: 'assistant', content: null, tool_calls: toolCalls })
+        conversation.push({ role: 'assistant', content: extrairTextoConteudo(choice.message.content), tool_calls: toolCalls })
         for (const { toolCall, resultado } of [...resultadosLeitura, ...resultadosEscrita]) {
-          conversation.push({ role: 'tool', tool_call_id: toolCall.id, content: resultado })
+          conversation.push({ role: 'tool', tool_call_id: toolCall.id, name: toolCall.function.name, content: resultado })
         }
         continue
       }
 
-      finalContent = String(choice.message.content || '')
+      finalContent = extrairTextoConteudo(choice.message.content)
+      if (!llmResult.modelo.suportaTools && respostaPareceSimularTool(finalContent)) {
+        throw new Error(montarMensagemLimitacao('tools', llmResult.modelo, ultimaMensagem))
+      }
       break
     }
 
