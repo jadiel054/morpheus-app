@@ -7,7 +7,7 @@ Implementação da v2.0 do MORPHEUS com foco em robustez operacional, observabil
 ## Entregas
 
 - Adicionado `render.yaml` na raiz para deploy do backend no Render.
-- Criado `morpheus-api/src/routes/health.ts` com verificações reais de Supabase, Groq, GitHub, Vercel e OpenRouter.
+- Criado `morpheus-api/src/routes/health.ts` com verificações reais de Supabase, GitHub, Vercel e provedores LLM configurados.
 - Adicionado endpoint `GET /api/health/circuit-breaker`.
 - Corrigidos problemas estruturais no backend:
   - export ausente de `rateLimitMiddleware`

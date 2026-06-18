@@ -93,7 +93,7 @@ export function MessageBubble({ message, isSpeaking, onSpeak, onStop, onRegenera
             marginLeft: 'auto', fontSize: '10px',
             color: 'rgba(0,255,255,0.25)', fontFamily: 'monospace',
           }}>
-            {message.model || 'groq/llama-3.3-70b'}
+            {message.model || 'modelo-indefinido'}
           </span>
           <span style={{
             fontSize: '10px', color: 'rgba(0,255,255,0.25)', fontFamily: 'monospace',

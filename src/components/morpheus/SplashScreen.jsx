@@ -5,9 +5,9 @@ const BOOT_SEQUENCE = [
   'Carregando modulos do sistema...',
   'Conectando ao Supabase...',
   'Inicializando Multi-LLM Router...',
-  'Groq (llama-3.3-70b) — PRIMARIO — ONLINE',
-  'OpenRouter — STANDBY',
-  'DeepSeek — STANDBY',
+  'Roteador Multi-LLM — ONLINE',
+  'Selecao dinamica por credenciais — ATIVA',
+  'Provedores configurados — PRONTOS',
   'KAIROS Engine — ATIVO',
   'Sistema pronto.',
 ]

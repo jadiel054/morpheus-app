@@ -40,13 +40,40 @@ async function testSupabase() {
   } catch (e) { return { ok: false, error: e.message } }
 }
 
-async function testGroq() {
+async function testLLMProvider(provider) {
   try {
     const i = JSON.parse(localStorage.getItem('morpheus_integrations') || '{}')
-    const key = i.groq?.key
-    if (!key) return { ok: false, error: 'Key nao configurada' }
-    const r = await fetch('https://api.groq.com/openai/v1/models', {
-      headers: { Authorization: `Bearer ${key}` }
+    const config = {
+      groq: {
+        key: i.groq?.key,
+        url: 'https://api.groq.com/openai/v1/models',
+        headers: (key) => ({ Authorization: `Bearer ${key}` }),
+      },
+      openrouter: {
+        key: i.openrouter?.key,
+        url: 'https://openrouter.ai/api/v1/models',
+        headers: (key) => ({ Authorization: `Bearer ${key}` }),
+      },
+      anthropic: {
+        key: i.claude?.key || i.anthropic?.key,
+        url: 'https://api.anthropic.com/v1/models',
+        headers: (key) => ({ 'x-api-key': key, 'anthropic-version': '2023-06-01' }),
+      },
+      openai: {
+        key: i.openai?.key,
+        url: 'https://api.openai.com/v1/models',
+        headers: (key) => ({ Authorization: `Bearer ${key}` }),
+      },
+      google: {
+        key: i.gemini?.key || i.google?.key,
+        url: (key) => `https://generativelanguage.googleapis.com/v1beta/models?key=${key}`,
+        headers: () => ({}),
+      },
+    }[provider]
+    if (!config?.key) return { ok: false, error: 'Key nao configurada' }
+    const url = typeof config.url === 'function' ? config.url(config.key) : config.url
+    const r = await fetch(url, {
+      headers: config.headers(config.key)
     })
     return r.ok ? { ok: true, detail: 'Conectado' } : { ok: false, error: `HTTP ${r.status}` }
   } catch (e) { return { ok: false, error: e.message } }
@@ -74,7 +101,11 @@ const TOOL_TESTS = [
   { name: 'GitHub API', icon: 'GH', test: testGitHub },
   { name: 'Vercel API', icon: 'VL', test: testVercel },
   { name: 'Supabase', icon: 'SB', test: testSupabase },
-  { name: 'Groq LLM', icon: 'GQ', test: testGroq },
+  { name: 'Groq', icon: 'GQ', test: () => testLLMProvider('groq') },
+  { name: 'OpenRouter', icon: 'OR', test: () => testLLMProvider('openrouter') },
+  { name: 'Anthropic', icon: 'AN', test: () => testLLMProvider('anthropic') },
+  { name: 'OpenAI', icon: 'OA', test: () => testLLMProvider('openai') },
+  { name: 'Google Gemini', icon: 'GG', test: () => testLLMProvider('google') },
   { name: 'Web Search', icon: 'WS', test: testWebSearch },
   { name: 'Telegram', icon: 'TG', test: async () => getTelegramStatus() },
 ]

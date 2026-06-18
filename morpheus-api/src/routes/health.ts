@@ -5,7 +5,7 @@ import { statusGeral } from '../lib/circuitBreaker.js'
 const router = Router()
 
 type CheckResultado = {
-  status: 'ok' | 'erro'
+  status: 'ok' | 'erro' | 'nao_configurado'
   latency?: number
   error?: string
 }
@@ -17,15 +17,24 @@ function obterSupabaseConfig() {
   }
 }
 
-async function verificarEndpoint(nome: string, url: string, token?: string): Promise<[string, CheckResultado]> {
-  if (!token) {
-    return [nome, { status: 'erro', error: `Variavel ${nome.toUpperCase()} nao configurada` }]
+async function verificarEndpoint(
+  nome: string,
+  url: string,
+  token?: string,
+  headersExtras: Record<string, string> = {},
+): Promise<[string, CheckResultado]> {
+  const headers = token
+    ? { Authorization: `Bearer ${token}`, ...headersExtras }
+    : headersExtras
+
+  if (!token && Object.keys(headersExtras).length === 0) {
+    return [nome, { status: 'nao_configurado', error: `Variavel ${nome.toUpperCase()} nao configurada` }]
   }
 
   try {
     const inicio = Date.now()
     const resposta = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}` },
+      headers,
     })
 
     return [nome, resposta.ok
@@ -68,17 +77,38 @@ router.get('/', async (_req: Request, res: Response) => {
   }
 
   const verificacoes = await Promise.all([
-    verificarEndpoint('groq', 'https://api.groq.com/openai/v1/models', process.env.GROQ_API_KEY),
     verificarEndpoint('github', 'https://api.github.com/user', process.env.GITHUB_TOKEN),
     verificarEndpoint('vercel', 'https://api.vercel.com/v2/user', process.env.VERCEL_TOKEN),
+    verificarEndpoint('groq', 'https://api.groq.com/openai/v1/models', process.env.GROQ_API_KEY),
     verificarEndpoint('openrouter', 'https://openrouter.ai/api/v1/models', process.env.OPENROUTER_API_KEY),
+    verificarEndpoint(
+      'anthropic',
+      'https://api.anthropic.com/v1/models',
+      undefined,
+      (process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY)
+        ? {
+            'x-api-key': process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY || '',
+            'anthropic-version': '2023-06-01',
+          }
+        : {},
+    ),
+    verificarEndpoint('openai', 'https://api.openai.com/v1/models', process.env.OPENAI_API_KEY),
+    verificarEndpoint(
+      'google',
+      `https://generativelanguage.googleapis.com/v1beta/models?key=${process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || ''}`,
+      undefined,
+      (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY)
+        ? { 'Content-Type': 'application/json' }
+        : {},
+    ),
   ])
 
   for (const [nome, resultado] of verificacoes) {
     checks[nome] = resultado
   }
 
-  const allOk = Object.values(checks).every((resultado) => resultado.status === 'ok')
+  const resultadosConfigurados = Object.values(checks).filter((resultado) => resultado.status !== 'nao_configurado')
+  const allOk = resultadosConfigurados.every((resultado) => resultado.status === 'ok')
 
   // Render Health Check: não bloquear deploy por integrações opcionais.
   // Retorna sempre 200 e sinaliza "degradado" no JSON quando necessário.

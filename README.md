@@ -18,8 +18,8 @@ Versão atualizada com health check real do backend, validação de tools com Zo
 | Backend | Express.js + Node.js (TypeScript) |
 | Autenticação | Supabase Auth (JWT) |
 | Banco de dados | Supabase (PostgreSQL) |
-| LLM Primário | Groq (Llama 3.3 70B / Mixtral 8x7B) |
-| LLM Secundário | OpenRouter (Qwen Coder, DeepSeek R1, Claude, GPT-4o) |
+| Roteamento LLM | Multi-provider por modelo explícito ou primeira credencial válida no modo auto |
+| Modelos suportados | Groq, Anthropic, OpenAI, OpenRouter e Google Gemini |
 | TTS Principal | ElevenLabs API (streaming) |
 | TTS Local | Kokoro-js (browser, ONNX) |
 | STT | Web Speech Recognition API |
@@ -30,7 +30,7 @@ Versão atualizada com health check real do backend, validação de tools com Zo
 ## v2.0
 
 - `render.yaml` adicionado na raiz para deploy do backend no Render
-- `morpheus-api/src/routes/health.ts` criado com verificações reais de Supabase, Groq, GitHub, Vercel e OpenRouter
+- `morpheus-api/src/routes/health.ts` criado com verificações reais de Supabase, GitHub, Vercel e provedores LLM configurados
 - `src/components/morpheus/tools/toolExecutor.js` atualizado com validação de parâmetros via `zod` e wrapper de circuit breaker
 - política de autonomia adicionada para branch temporária, PR e contenção de ações sensíveis
 - `src/lib/circuitBreaker.js` e `morpheus-api/src/lib/circuitBreaker.ts` adicionados para controle de falhas por tool

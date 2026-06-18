@@ -113,7 +113,7 @@ export function WelcomeMessage({ userName, onQuickCommand }) {
         justifyContent: 'center',
       }}>
         {[
-          { label: 'GROQ', status: 'ONLINE', color: '#00FFFF' },
+          { label: 'MULTI-LLM', status: 'ONLINE', color: '#00FFFF' },
           { label: 'KAIROS', status: 'ATIVO', color: '#7B61FF' },
           { label: 'SUPABASE', status: 'ONLINE', color: '#00FFFF' },
         ].map(({ label, status, color }) => (

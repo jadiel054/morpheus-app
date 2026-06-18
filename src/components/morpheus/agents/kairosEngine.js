@@ -36,8 +36,18 @@ const VERIFICATION_MAP = {
 function hasCredentials(key) {
   try {
     const i = JSON.parse(localStorage.getItem('morpheus_integrations') || '{}')
-    // Support both nested (github.token) and flat keys
-    return !!(i.github?.token || i.vercel?.token || i.groq?.key || i.openrouter?.key || i[key])
+    const providerAliases = {
+      anthropic: i.claude?.key || i.anthropic?.key,
+      claude: i.claude?.key || i.anthropic?.key,
+      google: i.gemini?.key || i.google?.key,
+      gemini: i.gemini?.key || i.google?.key,
+      groq: i.groq?.key,
+      openrouter: i.openrouter?.key,
+      openai: i.openai?.key,
+      github: i.github?.token,
+      vercel: i.vercel?.token,
+    }
+    return Boolean(providerAliases[key] || i[key]?.key || i[key]?.token || i[key])
   } catch { return false }
 }
 

@@ -19,6 +19,7 @@ import { speak } from '../lib/ttsDispatcher'
 import { useKokoroTTS } from '../components/morpheus/useKokoroTTS'
 import { useVoiceLive } from '../components/morpheus/useVoiceLive'
 import { routeToAgent } from '../components/morpheus/agents/agentRouter'
+import { extrairOrdemProviders, resolverModelo, resolverModeloAuto } from '../components/morpheus/agents/modelRouter'
 import { buildAgentSystemPrompt } from '../components/morpheus/agents/agentPrompts'
 import { processAndSaveMemory, buildMemoryPrompt, loadUserMemory, saveMemoryToSupabase } from '../components/morpheus/agents/memoryEngine'
 import { loadEvolutionProfile, buildStyleLayer, incrementMessageCount } from '../components/morpheus/agents/evolutionEngine'
@@ -371,18 +372,30 @@ export default function Morpheus() {
   const updateActiveTab = useCallback((updater) => setTabs(prev => prev.map(t => t.id === activeTabId ? updater(t) : t)), [activeTabId])
 
   const callAI = useCallback(async (systemPrompt, userText, history = []) => {
-    const stored = (() => { try { return JSON.parse(localStorage.getItem('morpheus_settings') || '{}') } catch { return {} } })()
+    const storedSettings = (() => { try { return JSON.parse(localStorage.getItem('morpheus_settings') || '{}') } catch { return {} } })()
     const integrations = (() => { try { return JSON.parse(localStorage.getItem('morpheus_integrations') || '{}') } catch { return {} } })()
-    const selectedModel = settings.ai_model || stored.ai_model || 'auto'
-    const groqKey = integrations.groq?.key || stored.groq_api_key || ''
-    const openrouterKey = integrations.openrouter?.key || stored.openrouter_api_key || ''
-    const claudeKey = integrations.claude?.key || stored.claude_api_key || ''
-    const openaiKey = integrations.openai?.key || stored.openai_api_key || ''
-    const deepseekKey = integrations.deepseek?.key || stored.deepseek_api_key || ''
-    const geminiKey = integrations.gemini?.key || stored.gemini_api_key || ''
+    const selectedModel = settings.ai_model || storedSettings.ai_model || 'auto'
+    const groqKey = integrations.groq?.key || storedSettings.groq_api_key || ''
+    const openrouterKey = integrations.openrouter?.key || storedSettings.openrouter_api_key || ''
+    const claudeKey = integrations.claude?.key || storedSettings.claude_api_key || ''
+    const openaiKey = integrations.openai?.key || storedSettings.openai_api_key || ''
+    const geminiKey = integrations.gemini?.key || integrations.google?.key || storedSettings.gemini_api_key || storedSettings.google_api_key || ''
     const isValidKey = (k) => k && k.length > 10 && k !== 'sk-...'
-    const hasAnyKey = [groqKey, openrouterKey, claudeKey, openaiKey, deepseekKey, geminiKey].some(isValidKey)
-    const selectedModelLabel = {
+    const providerKeys = {
+      groq: groqKey,
+      openrouter: openrouterKey,
+      anthropic: claudeKey,
+      openai: openaiKey,
+      google: geminiKey,
+    }
+    const providerLabels = {
+      groq: 'Groq',
+      openrouter: 'OpenRouter',
+      anthropic: 'Anthropic',
+      openai: 'OpenAI',
+      google: 'Google Gemini',
+    }
+    const modelLabels = {
       auto: 'Auto',
       groq_llama: 'Groq Llama 3.3 70B',
       groq_mixtral: 'Groq Mixtral 8x7B',
@@ -394,7 +407,16 @@ export default function Morpheus() {
       openrouter_glm: 'GLM-4 (OpenRouter)',
       google_gemini_flash: 'Gemini Flash (Google)',
       openai_gpt4o: 'OpenAI GPT-4o Mini',
-    }[selectedModel] || selectedModel
+    }
+    const providerOrder = extrairOrdemProviders(
+      integrations,
+      Object.keys(storedSettings).filter((key) => key.endsWith('_api_key')),
+    ).filter((provider) => isValidKey(providerKeys[provider]))
+    const hasAnyKey = providerOrder.length > 0
+    const autoModel = resolverModeloAuto(providerOrder)
+    const selectedModelLabel = selectedModel === 'auto'
+      ? `Auto${autoModel ? ` (${modelLabels[autoModel.id] || autoModel.id})` : ''}`
+      : (modelLabels[selectedModel] || selectedModel)
 
     const chamarClaude = async () => {
       if (!isValidKey(claudeKey)) return null
@@ -408,7 +430,7 @@ export default function Morpheus() {
           const d = await res.json()
           return { content: d.content?.[0]?.text || 'Sem resposta', model: 'claude-3-5-sonnet-20241022' }
         }
-      } catch (e) { console.warn('[callAI] Claude falhou:', e) }
+      } catch (e) { console.warn('[callAI] Falha no provedor anthropic:', e) }
       return null
     }
 
@@ -424,7 +446,7 @@ export default function Morpheus() {
           const d = await res.json()
           return { content: d.choices?.[0]?.message?.content || 'Sem resposta', model: 'gpt-4o-mini' }
         }
-      } catch (e) { console.warn('[callAI] OpenAI falhou:', e) }
+      } catch (e) { console.warn('[callAI] Falha no provedor openai:', e) }
       return null
     }
 
@@ -440,7 +462,7 @@ export default function Morpheus() {
           const d = await res.json()
           return { content: d.candidates?.[0]?.content?.parts?.[0]?.text || 'Sem resposta', model: 'gemini-2.0-flash' }
         }
-      } catch (e) { console.warn('[callAI] Gemini falhou:', e) }
+      } catch (e) { console.warn('[callAI] Falha no provedor google:', e) }
       return null
     }
 
@@ -464,7 +486,7 @@ export default function Morpheus() {
           const d = await res.json()
           return { content: d.choices?.[0]?.message?.content || 'Sem resposta', model: modelName }
         }
-      } catch (e) { console.warn('[callAI] OpenRouter falhou:', e) }
+      } catch (e) { console.warn('[callAI] Falha no provedor openrouter:', e) }
       return null
     }
 
@@ -480,19 +502,28 @@ export default function Morpheus() {
           const d = await res.json()
           return { content: d.choices?.[0]?.message?.content || 'Sem resposta', model: modelo }
         }
-      } catch (e) { console.warn('[callAI] Groq falhou:', e) }
+      } catch (e) { console.warn('[callAI] Falha no provedor groq:', e) }
+      return null
+    }
+
+    const executarProvider = async (provider, modelAlias = 'auto') => {
+      if (provider === 'anthropic') return chamarClaude()
+      if (provider === 'openai') return chamarOpenAI()
+      if (provider === 'google') return chamarGemini()
+      if (provider === 'openrouter') return chamarOpenRouter(modelAlias)
+      if (provider === 'groq') {
+        if (modelAlias === 'groq_mixtral') return chamarGroq('mixtral-8x7b-32768')
+        return chamarGroq('llama-3.3-70b-versatile')
+      }
       return null
     }
 
     const apiKeys = {
-      groq: groqKey,
-      openrouter: openrouterKey,
-      claude: claudeKey,
-      anthropic: claudeKey,
-      openai: openaiKey,
-      deepseek: deepseekKey,
-      gemini: geminiKey,
-      google: geminiKey,
+      ...(isValidKey(groqKey) ? { groq: groqKey } : {}),
+      ...(isValidKey(openrouterKey) ? { openrouter: openrouterKey } : {}),
+      ...(isValidKey(claudeKey) ? { claude: claudeKey, anthropic: claudeKey } : {}),
+      ...(isValidKey(openaiKey) ? { openai: openaiKey } : {}),
+      ...(isValidKey(geminiKey) ? { gemini: geminiKey, google: geminiKey } : {}),
       github: integrations.github?.token || '',
       vercel: integrations.vercel?.token || '',
     }
@@ -510,6 +541,7 @@ export default function Morpheus() {
             apiKeys,
             model: selectedModel,
             conversationId: activeTabId,
+            providerOrder,
           }),
         })
 
@@ -554,51 +586,23 @@ export default function Morpheus() {
       }
     }
 
-    if (selectedModel === 'anthropic_claude_sonnet' || selectedModel === 'claude') {
-      const resultado = await chamarClaude()
+    const explicitModel = resolverModelo(selectedModel)
+    if (selectedModel !== 'auto' && explicitModel) {
+      const resultado = await executarProvider(explicitModel.provider, selectedModel)
       if (resultado) return resultado
-      if (hasAnyKey) return { content: `[MORPHEUS] O modelo selecionado (${selectedModelLabel}) exige uma API key compatível do Anthropic.`, model: 'error' }
-    }
-
-    if (selectedModel === 'openai_gpt4o') {
-      const resultado = await chamarOpenAI()
-      if (resultado) return resultado
-      if (hasAnyKey) return { content: `[MORPHEUS] O modelo selecionado (${selectedModelLabel}) exige uma API key compatível da OpenAI.`, model: 'error' }
-    }
-
-    if (selectedModel === 'google_gemini_flash') {
-      const resultado = await chamarGemini()
-      if (resultado) return resultado
-      if (hasAnyKey) return { content: `[MORPHEUS] O modelo selecionado (${selectedModelLabel}) exige uma API key compatível do Google Gemini.`, model: 'error' }
-    }
-
-    if (selectedModel === 'openrouter_deepseek' || selectedModel === 'openrouter_qwen' || selectedModel === 'openrouter_qwen_coder' || selectedModel === 'openrouter_glm') {
-      const resultado = await chamarOpenRouter(selectedModel)
-      if (resultado) return resultado
-      if (hasAnyKey) return { content: `[MORPHEUS] O modelo selecionado (${selectedModelLabel}) exige uma API key compatível do OpenRouter.`, model: 'error' }
-    }
-
-    if (selectedModel === 'groq_mixtral') {
-      const resultado = await chamarGroq('mixtral-8x7b-32768')
-      if (resultado) return resultado
-      if (hasAnyKey) return { content: `[MORPHEUS] O modelo selecionado (${selectedModelLabel}) exige uma API key compatível da Groq.`, model: 'error' }
-    }
-
-    if (selectedModel === 'groq_llama') {
-      const resultado = await chamarGroq('llama-3.3-70b-versatile')
-      if (resultado) return resultado
-      if (hasAnyKey) return { content: `[MORPHEUS] O modelo selecionado (${selectedModelLabel}) exige uma API key compatível da Groq.`, model: 'error' }
+      if (hasAnyKey) {
+        return {
+          content: `[MORPHEUS] O modelo selecionado (${selectedModelLabel}) exige uma API key compatível de ${providerLabels[explicitModel.provider]}.`,
+          model: 'error',
+        }
+      }
     }
 
     if (selectedModel === 'auto') {
-      const resultado =
-        await chamarClaude() ||
-        await chamarOpenAI() ||
-        await chamarOpenRouter('auto') ||
-        await chamarGemini() ||
-        await chamarGroq('llama-3.3-70b-versatile')
-
-      if (resultado) return resultado
+      for (const provider of providerOrder) {
+        const resultado = await executarProvider(provider, 'auto')
+        if (resultado) return resultado
+      }
     }
 
     if (!hasAnyKey) {
@@ -654,7 +658,7 @@ export default function Morpheus() {
       const fullPrompt = searchContext ? text + '\n\n[DADOS ATUAIS DA WEB]\n' + searchContext : text
       const content = buildContentWithAttachments(fullPrompt, files)
       const history = activeTab.messages.slice(-10).map(m => ({ role: m.role, content: m.content }))
-      addStep('Chamando LLM (Groq primario)...')
+      addStep('Chamando LLM...')
       const result = await callAI(systemPrompt, typeof content === 'string' ? content : content.map(p => p.type === 'text' ? p.text : '').join('\n'), history)
       completeLastStep('Modelo: ' + (result.model || 'unknown'))
       const assistantMsg = { role: 'assistant', content: result.content, timestamp: Date.now(), model: result.model }

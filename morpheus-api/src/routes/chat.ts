@@ -4,7 +4,15 @@ import { PlannerEngine, TOOLS_PLANNER } from '../agents/plannerEngine.js'
 import { ReflectorEngine, TOOL_REFLECTOR } from '../agents/reflectorEngine.js'
 import { podeExecutar, registrarSucesso, registrarFalha } from '../lib/circuitBreaker.js'
 import { montarPrompt } from '../lib/prompts.js'
-import { MODELOS, rotearModelo, cadeiaDeFallback, resolverModelo } from '../agents/modelRouter.js'
+import {
+  MODELOS,
+  rotearModelo,
+  cadeiaDeFallback,
+  resolverModelo,
+  resolverModeloAuto,
+  extrairOrdemProviders,
+  normalizarProvider,
+} from '../agents/modelRouter.js'
 import { obterSupabaseAdmin, supabaseAdmin } from '../lib/supabaseAdmin.js'
 import { branchProtegida, gerarBranchAutonomo, resumirExecucaoAutonoma } from '../lib/autonomyPolicy.js'
 
@@ -209,22 +217,47 @@ function inferirTipoTarefa(userMessage: string) {
   return 'padrao'
 }
 
-function obterModeloInicial(model: string | undefined, tipoTarefa: string) {
+function extrairProvidersDoAmbiente() {
+  return Object.keys(process.env)
+    .map((key) => {
+      if (/^GROQ_API_KEY$/i.test(key)) return 'groq'
+      if (/^OPENROUTER_API_KEY$/i.test(key)) return 'openrouter'
+      if (/^(CLAUDE|ANTHROPIC)_API_KEY$/i.test(key)) return 'anthropic'
+      if (/^OPENAI_API_KEY$/i.test(key)) return 'openai'
+      if (/^(GEMINI|GOOGLE)_API_KEY$/i.test(key)) return 'google'
+      return null
+    })
+    .filter(Boolean) as Array<'groq' | 'openrouter' | 'anthropic' | 'openai' | 'google'>
+}
+
+function obterModeloInicial(model: string | undefined, tipoTarefa: string, providerOrder: string[]) {
+  const modeloAutomatico = resolverModeloAuto(providerOrder) || rotearModelo(tipoTarefa, providerOrder)
+
   if (model && model !== 'auto') {
     const personalizado = resolverModelo(model)
     if (personalizado) return personalizado
-    return { ...rotearModelo(tipoTarefa), id: model }
+    return modeloAutomatico ? { ...modeloAutomatico, id: model } : null
   }
 
-  return rotearModelo(tipoTarefa)
+  return modeloAutomatico || null
 }
 
-function obterApiKey(provider: 'groq' | 'openrouter' | 'anthropic' | 'openai' | 'google', apiKeys: Record<string, string> | undefined) {
-  if (provider === 'groq') return apiKeys?.groq || process.env.GROQ_API_KEY || ''
-  if (provider === 'openrouter') return apiKeys?.openrouter || process.env.OPENROUTER_API_KEY || ''
-  if (provider === 'anthropic') return apiKeys?.anthropic || apiKeys?.claude || process.env.CLAUDE_API_KEY || ''
-  if (provider === 'openai') return apiKeys?.openai || process.env.OPENAI_API_KEY || ''
+function obterApiKey(provider: string, apiKeys: Record<string, string> | undefined) {
+  const providerNormalizado = normalizarProvider(provider)
+  if (!providerNormalizado) return ''
+  if (providerNormalizado === 'groq') return apiKeys?.groq || process.env.GROQ_API_KEY || ''
+  if (providerNormalizado === 'openrouter') return apiKeys?.openrouter || process.env.OPENROUTER_API_KEY || ''
+  if (providerNormalizado === 'anthropic') return apiKeys?.anthropic || apiKeys?.claude || process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY || ''
+  if (providerNormalizado === 'openai') return apiKeys?.openai || process.env.OPENAI_API_KEY || ''
   return apiKeys?.google || apiKeys?.gemini || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || ''
+}
+
+function extrairProviderOrderDisponivel(
+  apiKeys: Record<string, string> | undefined,
+  providerOrder: string[] | undefined,
+) {
+  return extrairOrdemProviders(providerOrder, apiKeys || {}, extrairProvidersDoAmbiente())
+    .filter((provider) => Boolean(obterApiKey(provider, apiKeys)))
 }
 
 function obterUrlProvider(provider: 'groq' | 'openrouter' | 'anthropic' | 'openai' | 'google', modelId: string, apiKey: string) {
@@ -350,11 +383,12 @@ async function chamarComFallback(
   tools: typeof TOOL_DEFINITIONS,
   apiKeys: Record<string, string> | undefined,
   sendEvent: (type: string, data: Record<string, unknown>) => void,
+  providerOrder: string[],
   usarSomenteModeloInicial = false,
 ) {
   const cadeia = usarSomenteModeloInicial
     ? [modeloInicial]
-    : [modeloInicial, ...cadeiaDeFallback(modeloInicial.id)]
+    : [modeloInicial, ...cadeiaDeFallback(modeloInicial.id, providerOrder)]
 
   let ultimoErro: unknown = null
   for (const modelo of cadeia) {
@@ -416,11 +450,12 @@ async function executarToolComCircuito(nomeTool: string, executor: () => Promise
 }
 
 router.post('/', authenticate, async (req: Request, res: Response) => {
-  const { messages, apiKeys, model, conversationId } = req.body as {
+  const { messages, apiKeys, model, conversationId, providerOrder: providerOrderBody } = req.body as {
     messages?: Array<{ role: string, content: string }>
     apiKeys?: Record<string, string>
     model?: string
     conversationId?: string
+    providerOrder?: string[]
   }
 
   if (!messages?.length) {
@@ -440,7 +475,8 @@ router.post('/', authenticate, async (req: Request, res: Response) => {
   const ultimaMensagem = messages[messages.length - 1]?.content || ''
   const effortLevel = selectEffortLevel(ultimaMensagem)
   const tipoTarefa = inferirTipoTarefa(ultimaMensagem)
-  const modeloInicial = obterModeloInicial(model, tipoTarefa)
+  const providerOrder = extrairProviderOrderDisponivel(apiKeys, providerOrderBody)
+  const modeloInicial = obterModeloInicial(model, tipoTarefa, providerOrder)
   const modeloFoiSelecionado = Boolean(model && model !== 'auto')
   const planner = new PlannerEngine(conversationId || crypto.randomUUID())
   const reflector = new ReflectorEngine()
@@ -453,9 +489,13 @@ router.post('/', authenticate, async (req: Request, res: Response) => {
   let loopCount = 0
   let totalTokensUsed = 0
   let finalContent = ''
-  let modeloUsado = modeloInicial.id
+  let modeloUsado = modeloInicial?.id || 'none'
 
   try {
+    if (!modeloInicial) {
+      throw new Error('Nenhum LLM configurado. Adicione uma API key compatível em Integracoes.')
+    }
+
     sendEvent('plan', {
       steps: [
         { id: 'analyze', label: 'Analisando prompt', status: 'pending' },
@@ -473,7 +513,7 @@ router.post('/', authenticate, async (req: Request, res: Response) => {
         status: 'running',
       })
 
-      const llmResult = await chamarComFallback(modeloInicial, conversation, TOOL_DEFINITIONS, apiKeys, sendEvent, modeloFoiSelecionado)
+      const llmResult = await chamarComFallback(modeloInicial, conversation, TOOL_DEFINITIONS, apiKeys, sendEvent, providerOrder, modeloFoiSelecionado)
       const llmData = llmResult.data
       modeloUsado = llmResult.modelo.id
 

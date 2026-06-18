@@ -6,7 +6,7 @@ function StepIcon({ step }) {
   const t = step.text?.toLowerCase() || ''
   if (t.includes('github') || t.includes('reposit'))
     return <div className="ldrs-orbit" style={{ width: 12, height: 12 }} />
-  if (t.includes('ia') || t.includes('llm') || t.includes('groq') || t.includes('chamando'))
+  if (t.includes('ia') || t.includes('llm') || t.includes('modelo') || t.includes('chamando'))
     return <div className="ldrs-helix" style={{ width: 12, height: 12 }} />
   if (t.includes('salvando') || t.includes('memoria'))
     return <div className="ldrs-bouncy" style={{ height: 12 }}><span/><span/><span/></div>
