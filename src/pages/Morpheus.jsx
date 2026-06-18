@@ -19,7 +19,7 @@ import { speak } from '../lib/ttsDispatcher'
 import { useKokoroTTS } from '../components/morpheus/useKokoroTTS'
 import { useVoiceLive } from '../components/morpheus/useVoiceLive'
 import { routeToAgent } from '../components/morpheus/agents/agentRouter'
-import { extrairOrdemProviders, resolverModelo, resolverModeloAuto } from '../components/morpheus/agents/modelRouter'
+import { extrairOrdemProviders } from '../components/morpheus/agents/modelRouter'
 import { buildAgentSystemPrompt } from '../components/morpheus/agents/agentPrompts'
 import { processAndSaveMemory, buildMemoryPrompt, loadUserMemory, saveMemoryToSupabase } from '../components/morpheus/agents/memoryEngine'
 import { loadEvolutionProfile, buildStyleLayer, incrementMessageCount } from '../components/morpheus/agents/evolutionEngine'
@@ -76,34 +76,6 @@ async function readResponseBody(response) {
   } catch {
     return { text, json: null }
   }
-}
-
-function extractProviderError(provider, status, body, modelId) {
-  const providerLabel = {
-    groq: 'Groq',
-    openrouter: 'OpenRouter',
-    anthropic: 'Anthropic',
-    openai: 'OpenAI',
-    google: 'Google Gemini',
-  }[provider] || provider
-
-  const detailedMessage =
-    body?.json?.error?.message ||
-    body?.json?.error?.details ||
-    body?.json?.message ||
-    body?.json?.error ||
-    body?.text ||
-    `HTTP ${status}`
-
-  if (status === 401 || status === 403) {
-    return `${providerLabel}: autenticacao/permissao falhou. ${String(detailedMessage)}`
-  }
-
-  if (status === 400 || status === 404) {
-    return `${providerLabel}: modelo ou requisicao rejeitada${modelId ? ` (${modelId})` : ''}. ${String(detailedMessage)}`
-  }
-
-  return `${providerLabel}: ${String(detailedMessage)}`
 }
 
 async function syncRepoRegistry() {
@@ -426,7 +398,6 @@ export default function Morpheus() {
       const normalized = normalizeApiKey(k)
       return normalized && normalized.length > 10 && normalized !== 'sk-...'
     }
-    let lastProviderError = null
     const providerKeys = {
       groq: groqKey,
       openrouter: openrouterKey,
@@ -434,165 +405,10 @@ export default function Morpheus() {
       openai: openaiKey,
       google: geminiKey,
     }
-    const providerLabels = {
-      groq: 'Groq',
-      openrouter: 'OpenRouter',
-      anthropic: 'Anthropic',
-      openai: 'OpenAI',
-      google: 'Google Gemini',
-    }
-    const modelLabels = {
-      auto: 'Auto',
-      groq_llama: 'Groq Llama 3.3 70B',
-      groq_mixtral: 'Groq Mixtral 8x7B',
-      anthropic_claude_sonnet: 'Claude Sonnet 4.5',
-      'claude-sonnet-4-5-20250929': 'Claude Sonnet 4.5',
-      claude: 'Claude Sonnet 4.5',
-      openrouter_deepseek: 'DeepSeek R1 (OpenRouter)',
-      openrouter_qwen: 'Qwen Coder (OpenRouter)',
-      openrouter_qwen_coder: 'Qwen Coder (OpenRouter)',
-      openrouter_glm: 'GLM-4 (OpenRouter)',
-      google_gemini_flash: 'Gemini Flash (Google)',
-      openai_gpt4o: 'OpenAI GPT-4o Mini',
-    }
     const providerOrder = extrairOrdemProviders(
       integrations,
       Object.keys(storedSettings).filter((key) => key.endsWith('_api_key')),
     ).filter((provider) => isValidKey(providerKeys[provider]))
-    const hasAnyKey = providerOrder.length > 0
-    const autoModel = resolverModeloAuto(providerOrder)
-    const selectedModelLabel = selectedModel === 'auto'
-      ? `Auto${autoModel ? ` (${modelLabels[autoModel.id] || autoModel.id})` : ''}`
-      : (modelLabels[selectedModel] || selectedModel)
-
-    const chamarClaude = async () => {
-      if (!isValidKey(claudeKey)) return null
-      try {
-        const res = await fetch('https://api.anthropic.com/v1/messages', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-api-key': claudeKey, 'anthropic-version': '2023-06-01' },
-          body: JSON.stringify({ model: 'claude-sonnet-4-5-20250929', max_tokens: 2048, system: systemPrompt, messages: [...history.slice(-10), { role: 'user', content: userText }] }),
-        })
-        if (res.ok) {
-          const d = await res.json()
-          return { content: d.content?.[0]?.text || 'Sem resposta', model: 'claude-sonnet-4-5-20250929' }
-        }
-        const body = await readResponseBody(res)
-        lastProviderError = {
-          provider: 'anthropic',
-          message: extractProviderError('anthropic', res.status, body, 'claude-sonnet-4-5-20250929'),
-        }
-        console.warn('[callAI] Anthropic respondeu erro:', body.text)
-      } catch (e) { console.warn('[callAI] Falha no provedor anthropic:', e) }
-      return null
-    }
-
-    const chamarOpenAI = async () => {
-      if (!isValidKey(openaiKey)) return null
-      try {
-        const res = await fetch('https://api.openai.com/v1/chat/completions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${openaiKey}` },
-          body: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'system', content: systemPrompt }, ...history.slice(-10), { role: 'user', content: userText }], max_tokens: 2048 }),
-        })
-        if (res.ok) {
-          const d = await res.json()
-          return { content: d.choices?.[0]?.message?.content || 'Sem resposta', model: 'gpt-4o-mini' }
-        }
-        const body = await readResponseBody(res)
-        lastProviderError = {
-          provider: 'openai',
-          message: extractProviderError('openai', res.status, body, 'gpt-4o-mini'),
-        }
-      } catch (e) { console.warn('[callAI] Falha no provedor openai:', e) }
-      return null
-    }
-
-    const chamarGemini = async () => {
-      if (!isValidKey(geminiKey)) return null
-      try {
-        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ systemInstruction: { role: 'user', parts: [{ text: systemPrompt }] }, contents: [{ role: 'user', parts: [{ text: userText }] }] }),
-        })
-        if (res.ok) {
-          const d = await res.json()
-          return { content: d.candidates?.[0]?.content?.parts?.[0]?.text || 'Sem resposta', model: 'gemini-2.0-flash' }
-        }
-        const body = await readResponseBody(res)
-        lastProviderError = {
-          provider: 'google',
-          message: extractProviderError('google', res.status, body, 'gemini-2.0-flash'),
-        }
-        console.warn('[callAI] Google respondeu erro:', body.text)
-      } catch (e) { console.warn('[callAI] Falha no provedor google:', e) }
-      return null
-    }
-
-    const chamarOpenRouter = async (selected) => {
-      if (!isValidKey(openrouterKey)) return null
-      try {
-        const modelMap = {
-          openrouter_deepseek: 'deepseek/deepseek-r1',
-          openrouter_qwen: 'qwen/qwen-2.5-coder-32b-instruct',
-          openrouter_qwen_coder: 'qwen/qwen-2.5-coder-32b-instruct',
-          openrouter_glm: 'thudm/glm-4-9b',
-          auto: 'qwen/qwen-2.5-coder-32b-instruct',
-        }
-        const modelName = modelMap[selected] || modelMap.auto
-        const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${openrouterKey}`, 'HTTP-Referer': window.location.origin },
-          body: JSON.stringify({ model: modelName, messages: [{ role: 'system', content: systemPrompt }, ...history.slice(-10), { role: 'user', content: userText }], max_tokens: 2048 }),
-        })
-        if (res.ok) {
-          const d = await res.json()
-          return { content: d.choices?.[0]?.message?.content || 'Sem resposta', model: modelName }
-        }
-        const body = await readResponseBody(res)
-        lastProviderError = {
-          provider: 'openrouter',
-          message: extractProviderError('openrouter', res.status, body, modelName),
-        }
-        console.warn('[callAI] OpenRouter respondeu erro:', body.text)
-      } catch (e) { console.warn('[callAI] Falha no provedor openrouter:', e) }
-      return null
-    }
-
-    const chamarGroq = async (modelo = 'llama-3.3-70b-versatile') => {
-      if (!isValidKey(groqKey)) return null
-      try {
-        const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${groqKey}` },
-          body: JSON.stringify({ model: modelo, messages: [{ role: 'system', content: systemPrompt }, ...history.slice(-10), { role: 'user', content: userText }], max_tokens: 2048, temperature: 0.7 }),
-        })
-        if (res.ok) {
-          const d = await res.json()
-          return { content: d.choices?.[0]?.message?.content || 'Sem resposta', model: modelo }
-        }
-        const body = await readResponseBody(res)
-        lastProviderError = {
-          provider: 'groq',
-          message: extractProviderError('groq', res.status, body, modelo),
-        }
-        console.warn('[callAI] Groq respondeu erro:', body.text)
-      } catch (e) { console.warn('[callAI] Falha no provedor groq:', e) }
-      return null
-    }
-
-    const executarProvider = async (provider, modelAlias = 'auto') => {
-      if (provider === 'anthropic') return chamarClaude()
-      if (provider === 'openai') return chamarOpenAI()
-      if (provider === 'google') return chamarGemini()
-      if (provider === 'openrouter') return chamarOpenRouter(modelAlias)
-      if (provider === 'groq') {
-        if (modelAlias === 'groq_mixtral') return chamarGroq('mixtral-8x7b-32768')
-        return chamarGroq('llama-3.3-70b-versatile')
-      }
-      return null
-    }
 
     const apiKeys = {
       ...(isValidKey(groqKey) ? { groq: groqKey } : {}),
@@ -657,46 +473,25 @@ export default function Morpheus() {
             return { content: finalContent, model: usedModel }
           }
         }
+        const backendError = await readResponseBody(response)
+        return {
+          content: `[MORPHEUS] ${backendError.json?.message || backendError.json?.error || backendError.text || 'Falha no backend ao processar o chat.'}`,
+          model: 'error',
+        }
       } catch (e) {
-        console.warn('[callAI] Backend falhou, tentando fallback direto:', e)
-      }
-    }
-
-    const explicitModel = resolverModelo(selectedModel)
-    if (selectedModel !== 'auto' && explicitModel) {
-      const resultado = await executarProvider(explicitModel.provider, selectedModel)
-      if (resultado) return resultado
-      if (lastProviderError) {
+        console.warn('[callAI] Backend falhou:', e)
         return {
-          content: `[MORPHEUS] ${lastProviderError.message}`,
+          content: `[MORPHEUS] Falha no backend ao processar o chat: ${e.message || 'erro desconhecido'}`,
           model: 'error',
         }
       }
-      if (hasAnyKey) {
-        return {
-          content: `[MORPHEUS] O modelo selecionado (${selectedModelLabel}) exige uma API key compatível de ${providerLabels[explicitModel.provider]}.`,
-          model: 'error',
-        }
-      }
-    }
-
-    if (selectedModel === 'auto') {
-      for (const provider of providerOrder) {
-        const resultado = await executarProvider(provider, 'auto')
-        if (resultado) return resultado
-      }
-    }
-
-    if (!hasAnyKey) {
-      return { content: '[MORPHEUS] Nenhum LLM configurado. Va em Configuracoes > Integracoes e adicione qualquer API key suportada: Anthropic, OpenAI, OpenRouter, Google Gemini ou Groq.', model: 'none' }
     }
 
     return {
-      content: lastProviderError
-        ? `[MORPHEUS] ${lastProviderError.message}`
-        : `[MORPHEUS] Nao foi possivel usar o modelo selecionado (${selectedModelLabel}) com as credenciais atuais.`,
+      content: '[MORPHEUS] Sessao indisponivel para usar o backend do chat.',
       model: 'error',
     }
+
   }, [apiBaseUrl, session, settings.ai_model, activeTabId])
 
   const handleSend = useCallback(async (text, files = [], fromVoice = false) => {

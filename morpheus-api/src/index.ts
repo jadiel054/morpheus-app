@@ -8,6 +8,7 @@ import deployRouter from './routes/deploy.js'
 import telegramRouter from './routes/telegram.js'
 import emailRouter from './routes/email.js'
 import healthRouter from './routes/health.js'
+import credentialsRouter from './routes/credentials.js'
 import { authMiddleware } from './middleware/auth.js'
 import { rateLimitMiddleware } from './middleware/rateLimit.js'
 
@@ -22,6 +23,7 @@ app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.0.0', nam
 app.use('/api/health', healthRouter)
 
 app.use('/api/chat', chatRouter)
+app.use('/api/credentials', authMiddleware, credentialsRouter)
 app.use('/api/github', authMiddleware, githubRouter)
 app.use('/api/memory', authMiddleware, memoryRouter)
 app.use('/api/deploy', authMiddleware, deployRouter)

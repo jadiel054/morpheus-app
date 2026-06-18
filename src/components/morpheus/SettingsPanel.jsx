@@ -11,136 +11,34 @@ function normalizeApiKey(value) {
   return String(value || '').trim()
 }
 
-async function readResponseBody(response) {
-  const text = await response.text()
-  if (!text) return { text: '', json: null }
-  try {
-    return { text, json: JSON.parse(text) }
-  } catch {
-    return { text, json: null }
-  }
-}
-
-function extractProviderErrorMessage(provider, status, body) {
-  const fallback = body.text || `HTTP ${status}`
-  const json = body.json
-  const providerLabel = {
-    groq: 'Groq',
-    openrouter: 'OpenRouter',
-    openai: 'OpenAI',
-    claude: 'Anthropic',
-    gemini: 'Google Gemini',
-  }[provider] || provider
-
-  const detailedMessage =
-    json?.error?.message ||
-    json?.error?.details ||
-    json?.message ||
-    json?.error ||
-    fallback
-
-  if (status === 401 || status === 403) {
-    return {
-      ok: false,
-      code: status,
-      message: `${providerLabel}: falha de autenticacao/permissao. ${String(detailedMessage)}`,
-    }
-  }
-
-  if ((status === 400 || status === 404) && provider === 'claude') {
-    return {
-      ok: false,
-      code: status,
-      warning: true,
-      message: `Anthropic autenticou, mas rejeitou o recurso ou a requisicao. ${String(detailedMessage)}`,
-    }
-  }
-
-  if ((status === 400 || status === 404) && provider === 'gemini') {
-    return {
-      ok: false,
-      code: status,
-      warning: true,
-      message: `Google Gemini autenticou, mas rejeitou o modelo/requisicao. ${String(detailedMessage)}`,
-    }
-  }
-
-  return {
-    ok: false,
-    code: status,
-    message: `${providerLabel}: ${String(detailedMessage)}`,
-  }
-}
-
-async function testSimpleProviderRequest(provider, key, url, headers = {}) {
+async function testarProviderIA(apiBaseUrl, accessToken, provider, key) {
   const normalizedKey = normalizeApiKey(key)
-  if (!normalizedKey || normalizedKey.length < 10) {
-    return { ok: false, message: 'Key vazia ou muito curta apos normalizacao.' }
-  }
+  if (!accessToken) return { ok: false, message: 'Sessao ausente para validar credenciais via backend.' }
+  if (!normalizedKey || normalizedKey.length < 10) return { ok: false, message: 'Key vazia ou muito curta apos normalizacao.' }
 
   try {
-    const response = await fetch(url, { headers })
-    if (response.ok) {
-      return { ok: true, message: 'Autenticacao validada com sucesso.' }
-    }
-
-    return extractProviderErrorMessage(provider, response.status, await readResponseBody(response))
-  } catch (error) {
-    return { ok: false, message: `Erro de rede ao validar ${provider}: ${error.message}` }
-  }
-}
-
-async function testarProviderIA(provider, key) {
-  const normalizedKey = normalizeApiKey(key)
-
-  if (provider === 'groq') {
-    return testSimpleProviderRequest(
-      provider,
-      normalizedKey,
-      'https://api.groq.com/openai/v1/models',
-      { Authorization: `Bearer ${normalizedKey}` },
-    )
-  }
-
-  if (provider === 'openrouter') {
-    return testSimpleProviderRequest(
-      provider,
-      normalizedKey,
-      'https://openrouter.ai/api/v1/models',
-      { Authorization: `Bearer ${normalizedKey}` },
-    )
-  }
-
-  if (provider === 'openai') {
-    return testSimpleProviderRequest(
-      provider,
-      normalizedKey,
-      'https://api.openai.com/v1/models',
-      { Authorization: `Bearer ${normalizedKey}` },
-    )
-  }
-
-  if (provider === 'claude') {
-    return testSimpleProviderRequest(
-      provider,
-      normalizedKey,
-      'https://api.anthropic.com/v1/models',
-      {
-        'x-api-key': normalizedKey,
-        'anthropic-version': '2023-06-01',
+    const response = await fetch(`${apiBaseUrl}/api/credentials/test`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
       },
-    )
-  }
+      body: JSON.stringify({ provider, key: normalizedKey }),
+    })
 
-  if (provider === 'gemini') {
-    return testSimpleProviderRequest(
-      provider,
-      normalizedKey,
-      `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(normalizedKey)}`,
-    )
-  }
+    const text = await response.text()
+    let payload = {}
+    try { payload = text ? JSON.parse(text) : {} } catch { payload = { message: text } }
 
-  return { ok: false, message: `Provider desconhecido: ${provider}` }
+    return {
+      ok: Boolean(payload.ok),
+      warning: Boolean(payload.warning),
+      code: payload.status || response.status,
+      message: payload.message || (response.ok ? 'Autenticacao validada com sucesso.' : `Falha ao validar ${provider}.`),
+    }
+  } catch (error) {
+    return { ok: false, message: `Erro de rede ao validar ${provider} via backend: ${error.message}` }
+  }
 }
 
 const IntegrationsContext = createContext(null)
@@ -182,8 +80,9 @@ function setNested(obj, path, value) {
 }
 
 export function SettingsPanel({ settings, onUpdate, onClose, initialIntegrations }) {
-  const { user } = useAuth()
+  const { user, session } = useAuth()
   const kokoroHook = useKokoroTTS()
+  const apiBaseUrl = import.meta.env.VITE_API_URL || window.location.origin
   const [activeTab, setActiveTab] = useState('Perfil')
   const [saveStatus, setSaveStatus] = useState('')
   const [testingVoice, setTestingVoice] = useState(false)
@@ -268,7 +167,7 @@ export function SettingsPanel({ settings, onUpdate, onClose, initialIntegrations
                 { key: 'claude', label: 'Anthropic API Key (Claude)' },
               ].map(({ key, label }) => (
                 <IntegrationField key={key} label={label} placeholder="sk-..." storeKey={`${key}.key`}
-                  testFn={(k) => testarProviderIA(key, k)}
+                  testFn={(k) => testarProviderIA(apiBaseUrl, session?.access_token, key, k)}
                 />
               ))}
             </IntegrationSection>

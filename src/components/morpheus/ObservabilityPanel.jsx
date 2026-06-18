@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { X } from 'lucide-react'
-const CLAUDE_MODEL_ID = 'claude-sonnet-4-5-20250929'
+import { useAuth } from '../../lib/authContext'
 
 function getNested(obj, path) {
   return path.split('.').reduce((o, k) => (o && o[k] !== undefined) ? o[k] : '', obj)
@@ -41,51 +41,37 @@ async function testSupabase() {
   } catch (e) { return { ok: false, error: e.message } }
 }
 
-async function testLLMProvider(provider) {
+function normalizeApiKey(value) {
+  return String(value || '').trim()
+}
+
+async function testLLMProvider(apiBaseUrl, accessToken, provider) {
   try {
     const i = JSON.parse(localStorage.getItem('morpheus_integrations') || '{}')
-    const config = {
-      groq: {
-        key: i.groq?.key,
-        url: 'https://api.groq.com/openai/v1/models',
-        headers: (key) => ({ Authorization: `Bearer ${key}` }),
+    const providerKeys = {
+      groq: normalizeApiKey(i.groq?.key),
+      openrouter: normalizeApiKey(i.openrouter?.key),
+      anthropic: normalizeApiKey(i.claude?.key || i.anthropic?.key),
+      openai: normalizeApiKey(i.openai?.key),
+      google: normalizeApiKey(i.gemini?.key || i.google?.key),
+    }
+    const key = providerKeys[provider]
+    if (!accessToken) return { ok: false, error: 'Sessao nao disponivel para testar via backend' }
+    if (!key) return { ok: false, error: 'Key nao configurada' }
+    const r = await fetch(`${apiBaseUrl}/api/credentials/test`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
       },
-      openrouter: {
-        key: i.openrouter?.key,
-        url: 'https://openrouter.ai/api/v1/models',
-        headers: (key) => ({ Authorization: `Bearer ${key}` }),
-      },
-      anthropic: {
-        key: i.claude?.key || i.anthropic?.key,
-        url: 'https://api.anthropic.com/v1/messages',
-        method: 'POST',
-        headers: (key) => ({ 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' }),
-        body: () => JSON.stringify({ model: CLAUDE_MODEL_ID, max_tokens: 4, messages: [{ role: 'user', content: 'ping' }] }),
-      },
-      openai: {
-        key: i.openai?.key,
-        url: 'https://api.openai.com/v1/models',
-        headers: (key) => ({ Authorization: `Bearer ${key}` }),
-      },
-      google: {
-        key: i.gemini?.key || i.google?.key,
-        url: (key) => `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${key}`,
-        method: 'POST',
-        headers: () => ({ 'Content-Type': 'application/json' }),
-        body: () => JSON.stringify({
-          systemInstruction: { role: 'user', parts: [{ text: 'Teste de autenticacao' }] },
-          contents: [{ role: 'user', parts: [{ text: 'ping' }] }],
-        }),
-      },
-    }[provider]
-    if (!config?.key) return { ok: false, error: 'Key nao configurada' }
-    const url = typeof config.url === 'function' ? config.url(config.key) : config.url
-    const r = await fetch(url, {
-      method: config.method || 'GET',
-      headers: config.headers(config.key),
-      body: config.body ? config.body(config.key) : undefined,
+      body: JSON.stringify({ provider, key }),
     })
-    return r.ok ? { ok: true, detail: 'Conectado' } : { ok: false, error: `HTTP ${r.status}` }
+    const text = await r.text()
+    let payload = {}
+    try { payload = text ? JSON.parse(text) : {} } catch { payload = { message: text } }
+    return r.ok
+      ? { ok: true, detail: payload.message || 'Conectado' }
+      : { ok: false, error: payload.message || `HTTP ${r.status}` }
   } catch (e) { return { ok: false, error: e.message } }
 }
 
@@ -107,28 +93,30 @@ function getTelegramStatus() {
   } catch { return { ok: false, error: 'Erro' } }
 }
 
-const TOOL_TESTS = [
-  { name: 'GitHub API', icon: 'GH', test: testGitHub },
-  { name: 'Vercel API', icon: 'VL', test: testVercel },
-  { name: 'Supabase', icon: 'SB', test: testSupabase },
-  { name: 'Groq', icon: 'GQ', test: () => testLLMProvider('groq') },
-  { name: 'OpenRouter', icon: 'OR', test: () => testLLMProvider('openrouter') },
-  { name: 'Anthropic', icon: 'AN', test: () => testLLMProvider('anthropic') },
-  { name: 'OpenAI', icon: 'OA', test: () => testLLMProvider('openai') },
-  { name: 'Google Gemini', icon: 'GG', test: () => testLLMProvider('google') },
-  { name: 'Web Search', icon: 'WS', test: testWebSearch },
-  { name: 'Telegram', icon: 'TG', test: async () => getTelegramStatus() },
-]
-
 export function ObservabilityPanel({ onClose }) {
+  const { session } = useAuth()
+  const apiBaseUrl = import.meta.env.VITE_API_URL || window.location.origin
   const [activeTab, setActiveTab] = useState('overview')
   const [toolResults, setToolResults] = useState({})
   const [testingAll, setTestingAll] = useState(false)
 
+  const toolTests = [
+    { name: 'GitHub API', icon: 'GH', test: testGitHub },
+    { name: 'Vercel API', icon: 'VL', test: testVercel },
+    { name: 'Supabase', icon: 'SB', test: testSupabase },
+    { name: 'Groq', icon: 'GQ', test: () => testLLMProvider(apiBaseUrl, session?.access_token, 'groq') },
+    { name: 'OpenRouter', icon: 'OR', test: () => testLLMProvider(apiBaseUrl, session?.access_token, 'openrouter') },
+    { name: 'Anthropic', icon: 'AN', test: () => testLLMProvider(apiBaseUrl, session?.access_token, 'anthropic') },
+    { name: 'OpenAI', icon: 'OA', test: () => testLLMProvider(apiBaseUrl, session?.access_token, 'openai') },
+    { name: 'Google Gemini', icon: 'GG', test: () => testLLMProvider(apiBaseUrl, session?.access_token, 'google') },
+    { name: 'Web Search', icon: 'WS', test: testWebSearch },
+    { name: 'Telegram', icon: 'TG', test: async () => getTelegramStatus() },
+  ]
+
   const testAllTools = async () => {
     setTestingAll(true)
     const results = {}
-    for (const tool of TOOL_TESTS) {
+    for (const tool of toolTests) {
       results[tool.name] = '...'
       setToolResults({ ...results })
       try {
@@ -190,7 +178,7 @@ export function ObservabilityPanel({ onClose }) {
               </div>
 
               <div className="space-y-2">
-                {TOOL_TESTS.map(tool => {
+                {toolTests.map(tool => {
                   const result = toolResults[tool.name]
                   const isOk = result?.ok === true
                   const isFail = result?.ok === false
