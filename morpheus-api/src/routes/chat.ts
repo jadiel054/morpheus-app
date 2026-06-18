@@ -194,6 +194,10 @@ function safeJsonParse<T = Record<string, unknown>>(value: string | undefined, f
   }
 }
 
+function normalizeApiKey(value: unknown) {
+  return String(value || '').trim()
+}
+
 function compactHistory(history: Array<Record<string, unknown>>) {
   const systemMessages = history.filter((item) => item.role === 'system')
   const recentMessages = history.filter((item) => item.role !== 'system').slice(-20)
@@ -245,11 +249,11 @@ function obterModeloInicial(model: string | undefined, tipoTarefa: string, provi
 function obterApiKey(provider: string, apiKeys: Record<string, string> | undefined) {
   const providerNormalizado = normalizarProvider(provider)
   if (!providerNormalizado) return ''
-  if (providerNormalizado === 'groq') return apiKeys?.groq || process.env.GROQ_API_KEY || ''
-  if (providerNormalizado === 'openrouter') return apiKeys?.openrouter || process.env.OPENROUTER_API_KEY || ''
-  if (providerNormalizado === 'anthropic') return apiKeys?.anthropic || apiKeys?.claude || process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY || ''
-  if (providerNormalizado === 'openai') return apiKeys?.openai || process.env.OPENAI_API_KEY || ''
-  return apiKeys?.google || apiKeys?.gemini || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || ''
+  if (providerNormalizado === 'groq') return normalizeApiKey(apiKeys?.groq || process.env.GROQ_API_KEY || '')
+  if (providerNormalizado === 'openrouter') return normalizeApiKey(apiKeys?.openrouter || process.env.OPENROUTER_API_KEY || '')
+  if (providerNormalizado === 'anthropic') return normalizeApiKey(apiKeys?.anthropic || apiKeys?.claude || process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY || '')
+  if (providerNormalizado === 'openai') return normalizeApiKey(apiKeys?.openai || process.env.OPENAI_API_KEY || '')
+  return normalizeApiKey(apiKeys?.google || apiKeys?.gemini || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '')
 }
 
 function extrairProviderOrderDisponivel(
@@ -293,6 +297,43 @@ function criarHeadersProvider(provider: 'groq' | 'openrouter' | 'anthropic' | 'o
 
 function serializarErro(error: unknown) {
   return error instanceof Error ? error.message : String(error)
+}
+
+function extrairMensagemErroProvider(
+  provider: 'groq' | 'openrouter' | 'anthropic' | 'openai' | 'google',
+  status: number,
+  bodyText: string,
+  modelId: string,
+) {
+  const body = safeJsonParse<Record<string, unknown>>(bodyText, { raw: bodyText })
+  const providerLabel = {
+    groq: 'Groq',
+    openrouter: 'OpenRouter',
+    anthropic: 'Anthropic',
+    openai: 'OpenAI',
+    google: 'Google Gemini',
+  }[provider]
+
+  const details =
+    String(
+      (body.error as Record<string, unknown> | undefined)?.message ||
+      (body.error as Record<string, unknown> | undefined)?.details ||
+      body.message ||
+      body.error ||
+      body.raw ||
+      bodyText ||
+      `HTTP ${status}`,
+    )
+
+  if (status === 401 || status === 403) {
+    return `${providerLabel}: autenticacao/permissao falhou. ${details}`
+  }
+
+  if (status === 400 || status === 404) {
+    return `${providerLabel}: modelo ou requisicao rejeitada (${modelId}). ${details}`
+  }
+
+  return `${providerLabel}: ${details}`
 }
 
 async function chamarModelo(
@@ -344,7 +385,7 @@ async function chamarModelo(
       if (!response.ok) {
         const errorBody = await response.text()
         if (tentativa >= MAX_LLM_ATTEMPTS) {
-          throw new Error(`Falha no modelo ${modelo.id}: ${errorBody}`)
+          throw new Error(extrairMensagemErroProvider(modelo.provider, response.status, errorBody, modelo.id))
         }
 
         await sleep(RETRY_DELAY * tentativa)

@@ -64,6 +64,48 @@ function migrateOldKeys() {
 
 function getNestedLocal(obj, path) { return path.split('.').reduce((o, k) => (o && o[k] !== undefined) ? o[k] : '', obj) }
 
+function normalizeApiKey(value) {
+  return String(value || '').trim()
+}
+
+async function readResponseBody(response) {
+  const text = await response.text()
+  if (!text) return { text: '', json: null }
+  try {
+    return { text, json: JSON.parse(text) }
+  } catch {
+    return { text, json: null }
+  }
+}
+
+function extractProviderError(provider, status, body, modelId) {
+  const providerLabel = {
+    groq: 'Groq',
+    openrouter: 'OpenRouter',
+    anthropic: 'Anthropic',
+    openai: 'OpenAI',
+    google: 'Google Gemini',
+  }[provider] || provider
+
+  const detailedMessage =
+    body?.json?.error?.message ||
+    body?.json?.error?.details ||
+    body?.json?.message ||
+    body?.json?.error ||
+    body?.text ||
+    `HTTP ${status}`
+
+  if (status === 401 || status === 403) {
+    return `${providerLabel}: autenticacao/permissao falhou. ${String(detailedMessage)}`
+  }
+
+  if (status === 400 || status === 404) {
+    return `${providerLabel}: modelo ou requisicao rejeitada${modelId ? ` (${modelId})` : ''}. ${String(detailedMessage)}`
+  }
+
+  return `${providerLabel}: ${String(detailedMessage)}`
+}
+
 async function syncRepoRegistry() {
   try {
     const i = JSON.parse(localStorage.getItem('morpheus_integrations') || '{}')
@@ -375,12 +417,16 @@ export default function Morpheus() {
     const storedSettings = (() => { try { return JSON.parse(localStorage.getItem('morpheus_settings') || '{}') } catch { return {} } })()
     const integrations = (() => { try { return JSON.parse(localStorage.getItem('morpheus_integrations') || '{}') } catch { return {} } })()
     const selectedModel = settings.ai_model || storedSettings.ai_model || 'auto'
-    const groqKey = integrations.groq?.key || storedSettings.groq_api_key || ''
-    const openrouterKey = integrations.openrouter?.key || storedSettings.openrouter_api_key || ''
-    const claudeKey = integrations.claude?.key || storedSettings.claude_api_key || ''
-    const openaiKey = integrations.openai?.key || storedSettings.openai_api_key || ''
-    const geminiKey = integrations.gemini?.key || integrations.google?.key || storedSettings.gemini_api_key || storedSettings.google_api_key || ''
-    const isValidKey = (k) => k && k.length > 10 && k !== 'sk-...'
+    const groqKey = normalizeApiKey(integrations.groq?.key || storedSettings.groq_api_key || '')
+    const openrouterKey = normalizeApiKey(integrations.openrouter?.key || storedSettings.openrouter_api_key || '')
+    const claudeKey = normalizeApiKey(integrations.claude?.key || integrations.anthropic?.key || storedSettings.claude_api_key || storedSettings.anthropic_api_key || '')
+    const openaiKey = normalizeApiKey(integrations.openai?.key || storedSettings.openai_api_key || '')
+    const geminiKey = normalizeApiKey(integrations.gemini?.key || integrations.google?.key || storedSettings.gemini_api_key || storedSettings.google_api_key || '')
+    const isValidKey = (k) => {
+      const normalized = normalizeApiKey(k)
+      return normalized && normalized.length > 10 && normalized !== 'sk-...'
+    }
+    let lastProviderError = null
     const providerKeys = {
       groq: groqKey,
       openrouter: openrouterKey,
@@ -431,7 +477,12 @@ export default function Morpheus() {
           const d = await res.json()
           return { content: d.content?.[0]?.text || 'Sem resposta', model: 'claude-sonnet-4-5-20250929' }
         }
-        console.warn('[callAI] Anthropic respondeu erro:', await res.text())
+        const body = await readResponseBody(res)
+        lastProviderError = {
+          provider: 'anthropic',
+          message: extractProviderError('anthropic', res.status, body, 'claude-sonnet-4-5-20250929'),
+        }
+        console.warn('[callAI] Anthropic respondeu erro:', body.text)
       } catch (e) { console.warn('[callAI] Falha no provedor anthropic:', e) }
       return null
     }
@@ -447,6 +498,11 @@ export default function Morpheus() {
         if (res.ok) {
           const d = await res.json()
           return { content: d.choices?.[0]?.message?.content || 'Sem resposta', model: 'gpt-4o-mini' }
+        }
+        const body = await readResponseBody(res)
+        lastProviderError = {
+          provider: 'openai',
+          message: extractProviderError('openai', res.status, body, 'gpt-4o-mini'),
         }
       } catch (e) { console.warn('[callAI] Falha no provedor openai:', e) }
       return null
@@ -464,7 +520,12 @@ export default function Morpheus() {
           const d = await res.json()
           return { content: d.candidates?.[0]?.content?.parts?.[0]?.text || 'Sem resposta', model: 'gemini-2.0-flash' }
         }
-        console.warn('[callAI] Google respondeu erro:', await res.text())
+        const body = await readResponseBody(res)
+        lastProviderError = {
+          provider: 'google',
+          message: extractProviderError('google', res.status, body, 'gemini-2.0-flash'),
+        }
+        console.warn('[callAI] Google respondeu erro:', body.text)
       } catch (e) { console.warn('[callAI] Falha no provedor google:', e) }
       return null
     }
@@ -489,7 +550,12 @@ export default function Morpheus() {
           const d = await res.json()
           return { content: d.choices?.[0]?.message?.content || 'Sem resposta', model: modelName }
         }
-        console.warn('[callAI] OpenRouter respondeu erro:', await res.text())
+        const body = await readResponseBody(res)
+        lastProviderError = {
+          provider: 'openrouter',
+          message: extractProviderError('openrouter', res.status, body, modelName),
+        }
+        console.warn('[callAI] OpenRouter respondeu erro:', body.text)
       } catch (e) { console.warn('[callAI] Falha no provedor openrouter:', e) }
       return null
     }
@@ -506,7 +572,12 @@ export default function Morpheus() {
           const d = await res.json()
           return { content: d.choices?.[0]?.message?.content || 'Sem resposta', model: modelo }
         }
-        console.warn('[callAI] Groq respondeu erro:', await res.text())
+        const body = await readResponseBody(res)
+        lastProviderError = {
+          provider: 'groq',
+          message: extractProviderError('groq', res.status, body, modelo),
+        }
+        console.warn('[callAI] Groq respondeu erro:', body.text)
       } catch (e) { console.warn('[callAI] Falha no provedor groq:', e) }
       return null
     }
@@ -595,6 +666,12 @@ export default function Morpheus() {
     if (selectedModel !== 'auto' && explicitModel) {
       const resultado = await executarProvider(explicitModel.provider, selectedModel)
       if (resultado) return resultado
+      if (lastProviderError) {
+        return {
+          content: `[MORPHEUS] ${lastProviderError.message}`,
+          model: 'error',
+        }
+      }
       if (hasAnyKey) {
         return {
           content: `[MORPHEUS] O modelo selecionado (${selectedModelLabel}) exige uma API key compatível de ${providerLabels[explicitModel.provider]}.`,
@@ -614,7 +691,12 @@ export default function Morpheus() {
       return { content: '[MORPHEUS] Nenhum LLM configurado. Va em Configuracoes > Integracoes e adicione qualquer API key suportada: Anthropic, OpenAI, OpenRouter, Google Gemini ou Groq.', model: 'none' }
     }
 
-    return { content: `[MORPHEUS] Nao foi possivel usar o modelo selecionado (${selectedModelLabel}) com as credenciais atuais.`, model: 'error' }
+    return {
+      content: lastProviderError
+        ? `[MORPHEUS] ${lastProviderError.message}`
+        : `[MORPHEUS] Nao foi possivel usar o modelo selecionado (${selectedModelLabel}) com as credenciais atuais.`,
+      model: 'error',
+    }
   }, [apiBaseUrl, session, settings.ai_model, activeTabId])
 
   const handleSend = useCallback(async (text, files = [], fromVoice = false) => {

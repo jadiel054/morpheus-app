@@ -6,66 +6,141 @@ import { useKokoroTTS } from './useKokoroTTS'
 import { KokoroDownloadManager } from './KokoroDownloadManager'
 import { testGitHubTokenScopes } from '../../lib/errorHandler'
 const TABS = ['Perfil', 'Voz', 'IA', 'Integracoes', 'Seguranca']
-const CLAUDE_MODEL_ID = 'claude-sonnet-4-5-20250929'
+
+function normalizeApiKey(value) {
+  return String(value || '').trim()
+}
+
+async function readResponseBody(response) {
+  const text = await response.text()
+  if (!text) return { text: '', json: null }
+  try {
+    return { text, json: JSON.parse(text) }
+  } catch {
+    return { text, json: null }
+  }
+}
+
+function extractProviderErrorMessage(provider, status, body) {
+  const fallback = body.text || `HTTP ${status}`
+  const json = body.json
+  const providerLabel = {
+    groq: 'Groq',
+    openrouter: 'OpenRouter',
+    openai: 'OpenAI',
+    claude: 'Anthropic',
+    gemini: 'Google Gemini',
+  }[provider] || provider
+
+  const detailedMessage =
+    json?.error?.message ||
+    json?.error?.details ||
+    json?.message ||
+    json?.error ||
+    fallback
+
+  if (status === 401 || status === 403) {
+    return {
+      ok: false,
+      code: status,
+      message: `${providerLabel}: falha de autenticacao/permissao. ${String(detailedMessage)}`,
+    }
+  }
+
+  if ((status === 400 || status === 404) && provider === 'claude') {
+    return {
+      ok: false,
+      code: status,
+      warning: true,
+      message: `Anthropic autenticou, mas rejeitou o recurso ou a requisicao. ${String(detailedMessage)}`,
+    }
+  }
+
+  if ((status === 400 || status === 404) && provider === 'gemini') {
+    return {
+      ok: false,
+      code: status,
+      warning: true,
+      message: `Google Gemini autenticou, mas rejeitou o modelo/requisicao. ${String(detailedMessage)}`,
+    }
+  }
+
+  return {
+    ok: false,
+    code: status,
+    message: `${providerLabel}: ${String(detailedMessage)}`,
+  }
+}
+
+async function testSimpleProviderRequest(provider, key, url, headers = {}) {
+  const normalizedKey = normalizeApiKey(key)
+  if (!normalizedKey || normalizedKey.length < 10) {
+    return { ok: false, message: 'Key vazia ou muito curta apos normalizacao.' }
+  }
+
+  try {
+    const response = await fetch(url, { headers })
+    if (response.ok) {
+      return { ok: true, message: 'Autenticacao validada com sucesso.' }
+    }
+
+    return extractProviderErrorMessage(provider, response.status, await readResponseBody(response))
+  } catch (error) {
+    return { ok: false, message: `Erro de rede ao validar ${provider}: ${error.message}` }
+  }
+}
 
 async function testarProviderIA(provider, key) {
-  try {
-    if (!key || key.length < 10) return false
+  const normalizedKey = normalizeApiKey(key)
 
-    if (provider === 'groq') {
-      const r = await fetch('https://api.groq.com/openai/v1/models', {
-        headers: { Authorization: `Bearer ${key}` },
-      })
-      return r.ok
-    }
-
-    if (provider === 'openrouter') {
-      const r = await fetch('https://openrouter.ai/api/v1/models', {
-        headers: { Authorization: `Bearer ${key}` },
-      })
-      return r.ok
-    }
-
-    if (provider === 'openai') {
-      const r = await fetch('https://api.openai.com/v1/models', {
-        headers: { Authorization: `Bearer ${key}` },
-      })
-      return r.ok
-    }
-
-    if (provider === 'claude') {
-      const r = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': key,
-          'anthropic-version': '2023-06-01',
-        },
-        body: JSON.stringify({
-          model: CLAUDE_MODEL_ID,
-          max_tokens: 4,
-          messages: [{ role: 'user', content: 'ping' }],
-        }),
-      })
-      return r.ok
-    }
-
-    if (provider === 'gemini') {
-      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${key}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          systemInstruction: { role: 'user', parts: [{ text: 'Teste de autenticacao' }] },
-          contents: [{ role: 'user', parts: [{ text: 'ping' }] }],
-        }),
-      })
-      return r.ok
-    }
-
-    return false
-  } catch {
-    return false
+  if (provider === 'groq') {
+    return testSimpleProviderRequest(
+      provider,
+      normalizedKey,
+      'https://api.groq.com/openai/v1/models',
+      { Authorization: `Bearer ${normalizedKey}` },
+    )
   }
+
+  if (provider === 'openrouter') {
+    return testSimpleProviderRequest(
+      provider,
+      normalizedKey,
+      'https://openrouter.ai/api/v1/models',
+      { Authorization: `Bearer ${normalizedKey}` },
+    )
+  }
+
+  if (provider === 'openai') {
+    return testSimpleProviderRequest(
+      provider,
+      normalizedKey,
+      'https://api.openai.com/v1/models',
+      { Authorization: `Bearer ${normalizedKey}` },
+    )
+  }
+
+  if (provider === 'claude') {
+    return testSimpleProviderRequest(
+      provider,
+      normalizedKey,
+      'https://api.anthropic.com/v1/models',
+      {
+        'x-api-key': normalizedKey,
+        'anthropic-version': '2023-06-01',
+      },
+    )
+  }
+
+  if (provider === 'gemini') {
+    return testSimpleProviderRequest(
+      provider,
+      normalizedKey,
+      `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(normalizedKey)}`,
+    )
+  }
+
+  return { ok: false, message: `Provider desconhecido: ${provider}` }
 }
 
 const IntegrationsContext = createContext(null)
@@ -309,18 +384,25 @@ function IntegrationField({ label, placeholder, storeKey, testFn, noTest, onToke
   const [testDetail, setTestDetail] = useState(null)
   const isGithubToken = storeKey === 'github.token'
   const handleTest = async () => {
-    if (!value || value.length < 5) { setTestStatus('Vazia'); setTestDetail(null); return }
+    const normalizedValue = normalizeApiKey(value)
+    if (!normalizedValue || normalizedValue.length < 5) { setTestStatus('Vazia'); setTestDetail(null); return }
     setTestStatus('...'); setTestDetail(null)
     try {
       if (isGithubToken) {
-        const detail = await testGitHubTokenScopes(value)
+        const detail = await testGitHubTokenScopes(normalizedValue)
         setTestDetail(detail)
         if (!detail.ok) setTestStatus('Invalida')
         else if (detail.warning) setTestStatus('OK*')
         else setTestStatus('OK')
       } else {
-        const ok = await testFn(value)
-        setTestStatus(ok ? 'OK' : 'Invalida')
+        const detail = await testFn(normalizedValue)
+        const normalizedDetail = typeof detail === 'boolean'
+          ? { ok: detail, message: detail ? 'Teste concluido com sucesso.' : 'Validacao falhou sem detalhe.' }
+          : detail
+        setTestDetail(normalizedDetail)
+        if (!normalizedDetail.ok) setTestStatus(normalizedDetail.warning ? 'OK*' : 'Invalida')
+        else if (normalizedDetail.warning) setTestStatus('OK*')
+        else setTestStatus('OK')
       }
     } catch { setTestStatus('Erro') }
     setTimeout(() => { setTestStatus(''); setTestDetail(null) }, 8000)
