@@ -31,7 +31,7 @@ export const MODELOS: Record<string, ModeloConfig> = {
     uso: 'contexto longo, análise de arquivos grandes',
   },
   cerebras_llama: {
-    id: 'llama-3.3-70b',
+    id: 'gpt-oss-120b',
     provider: 'cerebras',
     nome: 'Cerebras Llama 3.3 70B',
     suportaTools: true,
