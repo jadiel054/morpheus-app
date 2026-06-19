@@ -14,6 +14,7 @@ function normalizeApiKey(value: unknown) {
 
 function obterKeyDoAmbiente(provider: string) {
   if (provider === 'groq') return normalizeApiKey(process.env.GROQ_API_KEY)
+  if (provider === 'cerebras') return normalizeApiKey(process.env.CEREBRAS_API_KEY)
   if (provider === 'openrouter') return normalizeApiKey(process.env.OPENROUTER_API_KEY)
   if (provider === 'openai') return normalizeApiKey(process.env.OPENAI_API_KEY)
   if (provider === 'claude' || provider === 'anthropic') {
@@ -45,6 +46,14 @@ function obterConfigProvider(provider: string, key: string): ProviderConfig | nu
   if (provider === 'groq') {
     return {
       url: 'https://api.groq.com/openai/v1/models',
+      method: 'GET',
+      headers: { Authorization: `Bearer ${key}` },
+    } satisfies ProviderConfig
+  }
+
+  if (provider === 'cerebras') {
+    return {
+      url: 'https://api.cerebras.ai/v1/models',
       method: 'GET',
       headers: { Authorization: `Bearer ${key}` },
     } satisfies ProviderConfig
@@ -128,7 +137,11 @@ router.post('/test', async (req: Request, res: Response) => {
 
     const bodyText = await response.text()
     const detalhe = extrairMensagemErro(response.status, bodyText)
-    const providerLabel = provider === 'claude' ? 'Anthropic' : provider === 'gemini' ? 'Google Gemini' : provider
+    const providerLabel =
+      provider === 'claude' ? 'Anthropic'
+        : provider === 'gemini' ? 'Google Gemini'
+          : provider === 'cerebras' ? 'Cerebras'
+            : provider
 
     return res.status(response.status).json({
       ok: false,

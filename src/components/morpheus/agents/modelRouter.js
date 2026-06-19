@@ -19,6 +19,16 @@ export const MODELOS = {
     maxTokens: 32768,
     uso: 'contexto longo, análise de arquivos grandes',
   },
+  cerebras_llama: {
+    id: 'llama-3.3-70b',
+    provider: 'cerebras',
+    nome: 'Cerebras Llama 3.3 70B',
+    suportaTools: true,
+    suportaVisao: false,
+    temperatura: 0.3,
+    maxTokens: 8192,
+    uso: 'alta velocidade via Cerebras com tool calling OpenAI-compatível',
+  },
   openrouter_qwen: {
     id: 'qwen/qwen-2.5-coder-32b-instruct',
     provider: 'openrouter',
@@ -93,6 +103,7 @@ export const MODELOS = {
 
 export const PROVIDER_DEFAULT_MODELS = {
   groq: 'groq_llama',
+  cerebras: 'cerebras_llama',
   openrouter: 'openrouter_qwen',
   anthropic: 'anthropic_claude_sonnet',
   openai: 'openai_gpt4o',
@@ -103,6 +114,9 @@ const PROVIDER_ALIASES = {
   groq: 'groq',
   groq_key: 'groq',
   groq_api_key: 'groq',
+  cerebras: 'cerebras',
+  cerebras_key: 'cerebras',
+  cerebras_api_key: 'cerebras',
   openrouter: 'openrouter',
   openrouter_key: 'openrouter',
   openrouter_api_key: 'openrouter',
@@ -125,6 +139,7 @@ const PROVIDER_ALIASES = {
 const ALIAS_MODELOS = {
   groq_llama: 'groq_llama',
   groq_mixtral: 'groq_mixtral',
+  cerebras_llama: 'cerebras_llama',
   openrouter_qwen: 'openrouter_qwen',
   openrouter_qwen_coder: 'openrouter_qwen',
   openrouter_deepseek: 'openrouter_deepseek',

@@ -85,6 +85,7 @@ router.get('/', async (_req: Request, res: Response) => {
     verificarEndpoint('github', 'https://api.github.com/user', process.env.GITHUB_TOKEN),
     verificarEndpoint('vercel', 'https://api.vercel.com/v2/user', process.env.VERCEL_TOKEN),
     verificarEndpoint('groq', 'https://api.groq.com/openai/v1/models', process.env.GROQ_API_KEY),
+    verificarEndpoint('cerebras', 'https://api.cerebras.ai/v1/models', process.env.CEREBRAS_API_KEY),
     verificarEndpoint('openrouter', 'https://openrouter.ai/api/v1/models', process.env.OPENROUTER_API_KEY),
     verificarEndpoint(
       'anthropic',

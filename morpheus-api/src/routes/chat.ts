@@ -25,7 +25,7 @@ const MAX_LLM_ATTEMPTS = 3
 const MAX_BUDGET_TOKENS = 100_000
 const GITHUB_DEFAULT_OWNER = process.env.GITHUB_OWNER || 'jadiel054'
 
-type Provider = 'groq' | 'openrouter' | 'anthropic' | 'openai' | 'google'
+type Provider = 'groq' | 'openrouter' | 'anthropic' | 'openai' | 'google' | 'cerebras'
 type TextPart = { type: 'text', text: string }
 type ImagePart = { type: 'image_url', image_url: { url: string, detail?: string } }
 type MessagePart = TextPart | ImagePart
@@ -330,13 +330,14 @@ function extrairProvidersDoAmbiente() {
   return Object.keys(process.env)
     .map((key) => {
       if (/^GROQ_API_KEY$/i.test(key)) return 'groq'
+      if (/^CEREBRAS_API_KEY$/i.test(key)) return 'cerebras'
       if (/^OPENROUTER_API_KEY$/i.test(key)) return 'openrouter'
       if (/^(CLAUDE|ANTHROPIC)_API_KEY$/i.test(key)) return 'anthropic'
       if (/^OPENAI_API_KEY$/i.test(key)) return 'openai'
       if (/^(GEMINI|GOOGLE)_API_KEY$/i.test(key)) return 'google'
       return null
     })
-    .filter(Boolean) as Array<'groq' | 'openrouter' | 'anthropic' | 'openai' | 'google'>
+    .filter(Boolean) as Array<'groq' | 'cerebras' | 'openrouter' | 'anthropic' | 'openai' | 'google'>
 }
 
 function obterModeloInicial(model: string | undefined, tipoTarefa: string, providerOrder: string[]) {
@@ -355,6 +356,7 @@ function obterApiKey(provider: string, apiKeys: Record<string, string> | undefin
   const providerNormalizado = normalizarProvider(provider)
   if (!providerNormalizado) return ''
   if (providerNormalizado === 'groq') return normalizeApiKey(apiKeys?.groq || process.env.GROQ_API_KEY || '')
+  if (providerNormalizado === 'cerebras') return normalizeApiKey(apiKeys?.cerebras || process.env.CEREBRAS_API_KEY || '')
   if (providerNormalizado === 'openrouter') return normalizeApiKey(apiKeys?.openrouter || process.env.OPENROUTER_API_KEY || '')
   if (providerNormalizado === 'anthropic') return normalizeApiKey(apiKeys?.anthropic || apiKeys?.claude || process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY || '')
   if (providerNormalizado === 'openai') return normalizeApiKey(apiKeys?.openai || process.env.OPENAI_API_KEY || '')
@@ -369,15 +371,16 @@ function extrairProviderOrderDisponivel(
     .filter((provider) => Boolean(obterApiKey(provider, apiKeys)))
 }
 
-function obterUrlProvider(provider: 'groq' | 'openrouter' | 'anthropic' | 'openai' | 'google', modelId: string, apiKey: string) {
+function obterUrlProvider(provider: 'groq' | 'cerebras' | 'openrouter' | 'anthropic' | 'openai' | 'google', modelId: string, apiKey: string) {
   if (provider === 'groq') return 'https://api.groq.com/openai/v1/chat/completions'
+  if (provider === 'cerebras') return 'https://api.cerebras.ai/v1/chat/completions'
   if (provider === 'openrouter') return 'https://openrouter.ai/api/v1/chat/completions'
   if (provider === 'anthropic') return 'https://api.anthropic.com/v1/messages'
   if (provider === 'openai') return 'https://api.openai.com/v1/chat/completions'
   return `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`
 }
 
-function criarHeadersProvider(provider: 'groq' | 'openrouter' | 'anthropic' | 'openai' | 'google', apiKey: string) {
+function criarHeadersProvider(provider: 'groq' | 'cerebras' | 'openrouter' | 'anthropic' | 'openai' | 'google', apiKey: string) {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
 
   if (provider === 'anthropic') {
@@ -405,7 +408,7 @@ function serializarErro(error: unknown) {
 }
 
 function extrairMensagemErroProvider(
-  provider: 'groq' | 'openrouter' | 'anthropic' | 'openai' | 'google',
+  provider: 'groq' | 'cerebras' | 'openrouter' | 'anthropic' | 'openai' | 'google',
   status: number,
   bodyText: string,
   modelId: string,
@@ -413,6 +416,7 @@ function extrairMensagemErroProvider(
   const body = safeJsonParse<Record<string, unknown>>(bodyText, { raw: bodyText })
   const providerLabel = {
     groq: 'Groq',
+    cerebras: 'Cerebras',
     openrouter: 'OpenRouter',
     anthropic: 'Anthropic',
     openai: 'OpenAI',
@@ -457,6 +461,36 @@ function converterToolsParaGemini(tools: typeof TOOL_DEFINITIONS) {
       parameters: tool.function.parameters,
     })),
   }]
+}
+
+function converterToolsParaCerebras(tools: typeof TOOL_DEFINITIONS) {
+  return tools.map((tool) => ({
+    ...tool,
+    function: {
+      ...tool.function,
+      strict: true,
+    },
+  }))
+}
+
+function converterConversationParaCerebras(conversation: Array<ConversationMessage>): Array<Record<string, unknown>> {
+  return conversation.map((item) => {
+    if (item.role === 'assistant' && item.tool_calls?.length) {
+      return {
+        role: 'assistant',
+        content: extrairTextoConteudo(item.content),
+        tool_calls: [],
+      }
+    }
+
+    return {
+      ...(item.tool_calls ? { tool_calls: item.tool_calls } : {}),
+      ...(item.tool_call_id ? { tool_call_id: item.tool_call_id } : {}),
+      ...(item.name ? { name: item.name } : {}),
+      role: item.role,
+      content: item.content,
+    }
+  })
 }
 
 function converterConteudoParaAnthropic(content: string | MessagePart[] | null): Array<Record<string, unknown>> {
@@ -713,6 +747,15 @@ async function chamarModelo(
                   tools: modelo.suportaTools ? converterToolsParaGemini(tools) : undefined,
                   toolConfig: modelo.suportaTools ? { functionCallingConfig: { mode: 'AUTO' } } : undefined,
                 }
+              : modelo.provider === 'cerebras'
+                ? {
+                    model: modelo.id,
+                    messages: converterConversationParaCerebras(conversation),
+                    tools: modelo.suportaTools ? converterToolsParaCerebras(tools) : undefined,
+                    tool_choice: modelo.suportaTools ? 'auto' : undefined,
+                    max_completion_tokens: Math.min(modelo.maxTokens, 4096),
+                    temperature: modelo.temperatura,
+                  }
               : {
                   model: modelo.id,
                   messages: conversation,

@@ -51,6 +51,7 @@ async function testLLMProvider(apiBaseUrl, accessToken, provider) {
     const i = JSON.parse(localStorage.getItem('morpheus_integrations') || '{}')
     const providerKeys = {
       groq: normalizeApiKey(i.groq?.key),
+      cerebras: normalizeApiKey(i.cerebras?.key),
       openrouter: normalizeApiKey(i.openrouter?.key),
       anthropic: normalizeApiKey(i.claude?.key || i.anthropic?.key),
       openai: normalizeApiKey(i.openai?.key),
@@ -106,6 +107,7 @@ export function ObservabilityPanel({ onClose }) {
     { name: 'Vercel API', icon: 'VL', test: testVercel },
     { name: 'Supabase', icon: 'SB', test: testSupabase },
     { name: 'Groq', icon: 'GQ', test: () => testLLMProvider(apiBaseUrl, session?.access_token, 'groq') },
+    { name: 'Cerebras', icon: 'CB', test: () => testLLMProvider(apiBaseUrl, session?.access_token, 'cerebras') },
     { name: 'OpenRouter', icon: 'OR', test: () => testLLMProvider(apiBaseUrl, session?.access_token, 'openrouter') },
     { name: 'Anthropic', icon: 'AN', test: () => testLLMProvider(apiBaseUrl, session?.access_token, 'anthropic') },
     { name: 'OpenAI', icon: 'OA', test: () => testLLMProvider(apiBaseUrl, session?.access_token, 'openai') },

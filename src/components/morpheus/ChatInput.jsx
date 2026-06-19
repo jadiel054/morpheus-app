@@ -203,6 +203,7 @@ export function ChatInput({ onSend, isLoading, isListening, onToggleMic, isSpeak
           <option value="auto">AUTO</option>
           <option value="groq_llama">GROQ LLAMA</option>
           <option value="groq_mixtral">GROQ MIXTRAL</option>
+          <option value="cerebras_llama">CEREBRAS LLAMA</option>
           <option value="anthropic_claude_sonnet">CLAUDE SONNET</option>
           <option value="openrouter_deepseek">DEEPSEEK R1</option>
           <option value="openrouter_qwen">QWEN CODER</option>

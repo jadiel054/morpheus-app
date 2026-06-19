@@ -1,6 +1,6 @@
 export type ModeloConfig = {
   id: string
-  provider: 'groq' | 'openrouter' | 'anthropic' | 'openai' | 'google'
+  provider: 'groq' | 'openrouter' | 'anthropic' | 'openai' | 'google' | 'cerebras'
   nome: string
   suportaTools: boolean
   suportaVisao: boolean
@@ -29,6 +29,16 @@ export const MODELOS: Record<string, ModeloConfig> = {
     temperatura: 0.4,
     maxTokens: 32768,
     uso: 'contexto longo, análise de arquivos grandes',
+  },
+  cerebras_llama: {
+    id: 'llama-3.3-70b',
+    provider: 'cerebras',
+    nome: 'Cerebras Llama 3.3 70B',
+    suportaTools: true,
+    suportaVisao: false,
+    temperatura: 0.3,
+    maxTokens: 8192,
+    uso: 'alta velocidade via Cerebras com tool calling OpenAI-compatível',
   },
   openrouter_qwen: {
     id: 'qwen/qwen-2.5-coder-32b-instruct',
@@ -104,6 +114,7 @@ export const MODELOS: Record<string, ModeloConfig> = {
 
 export const PROVIDER_DEFAULT_MODELS: Record<string, keyof typeof MODELOS> = {
   groq: 'groq_llama',
+  cerebras: 'cerebras_llama',
   openrouter: 'openrouter_qwen',
   anthropic: 'anthropic_claude_sonnet',
   openai: 'openai_gpt4o',
@@ -113,6 +124,7 @@ export const PROVIDER_DEFAULT_MODELS: Record<string, keyof typeof MODELOS> = {
 const ALIAS_MODELOS: Record<string, string> = {
   groq_llama: 'groq_llama',
   groq_mixtral: 'groq_mixtral',
+  cerebras_llama: 'cerebras_llama',
   openrouter_qwen: 'openrouter_qwen',
   openrouter_qwen_coder: 'openrouter_qwen',
   openrouter_deepseek: 'openrouter_deepseek',
@@ -128,6 +140,9 @@ const PROVIDER_ALIASES: Record<string, keyof typeof PROVIDER_DEFAULT_MODELS> = {
   groq: 'groq',
   groq_key: 'groq',
   groq_api_key: 'groq',
+  cerebras: 'cerebras',
+  cerebras_key: 'cerebras',
+  cerebras_api_key: 'cerebras',
   openrouter: 'openrouter',
   openrouter_key: 'openrouter',
   openrouter_api_key: 'openrouter',

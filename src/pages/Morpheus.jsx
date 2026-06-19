@@ -392,6 +392,7 @@ export default function Morpheus() {
     const selectedModel = settings.ai_model || storedSettings.ai_model || 'auto'
     const groqKey = normalizeApiKey(integrations.groq?.key || storedSettings.groq_api_key || '')
     const openrouterKey = normalizeApiKey(integrations.openrouter?.key || storedSettings.openrouter_api_key || '')
+    const cerebrasKey = normalizeApiKey(integrations.cerebras?.key || storedSettings.cerebras_api_key || '')
     const claudeKey = normalizeApiKey(integrations.claude?.key || integrations.anthropic?.key || storedSettings.claude_api_key || storedSettings.anthropic_api_key || '')
     const openaiKey = normalizeApiKey(integrations.openai?.key || storedSettings.openai_api_key || '')
     const geminiKey = normalizeApiKey(integrations.gemini?.key || integrations.google?.key || storedSettings.gemini_api_key || storedSettings.google_api_key || '')
@@ -401,6 +402,7 @@ export default function Morpheus() {
     }
     const providerKeys = {
       groq: groqKey,
+      cerebras: cerebrasKey,
       openrouter: openrouterKey,
       anthropic: claudeKey,
       openai: openaiKey,
@@ -413,6 +415,7 @@ export default function Morpheus() {
 
     const apiKeys = {
       ...(isValidKey(groqKey) ? { groq: groqKey } : {}),
+      ...(isValidKey(cerebrasKey) ? { cerebras: cerebrasKey } : {}),
       ...(isValidKey(openrouterKey) ? { openrouter: openrouterKey } : {}),
       ...(isValidKey(claudeKey) ? { claude: claudeKey, anthropic: claudeKey } : {}),
       ...(isValidKey(openaiKey) ? { openai: openaiKey } : {}),
