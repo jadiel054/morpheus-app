@@ -12,6 +12,19 @@ function normalizeApiKey(value: unknown) {
   return String(value || '').trim()
 }
 
+function obterKeyDoAmbiente(provider: string) {
+  if (provider === 'groq') return normalizeApiKey(process.env.GROQ_API_KEY)
+  if (provider === 'openrouter') return normalizeApiKey(process.env.OPENROUTER_API_KEY)
+  if (provider === 'openai') return normalizeApiKey(process.env.OPENAI_API_KEY)
+  if (provider === 'claude' || provider === 'anthropic') {
+    return normalizeApiKey(process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY)
+  }
+  if (provider === 'gemini' || provider === 'google') {
+    return normalizeApiKey(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY)
+  }
+  return ''
+}
+
 function extrairMensagemErro(status: number, bodyText: string) {
   if (!bodyText) return `HTTP ${status}`
   try {
@@ -77,14 +90,19 @@ function obterConfigProvider(provider: string, key: string): ProviderConfig | nu
 
 router.post('/test', async (req: Request, res: Response) => {
   const provider = String(req.body?.provider || '').trim()
-  const key = normalizeApiKey(req.body?.key)
+  const keyInformada = normalizeApiKey(req.body?.key)
+  const keyDoAmbiente = provider ? obterKeyDoAmbiente(provider) : ''
+  const key = keyInformada || keyDoAmbiente
 
   if (!provider) {
     return res.status(400).json({ ok: false, message: 'Provider nao informado.' })
   }
 
   if (!key || key.length < 10) {
-    return res.status(400).json({ ok: false, message: 'Key vazia ou muito curta apos normalizacao.' })
+    return res.status(400).json({
+      ok: false,
+      message: 'Key ausente, vazia ou muito curta apos normalizacao. Informe a key no frontend ou configure a variavel correspondente no backend.',
+    })
   }
 
   const config = obterConfigProvider(provider, key)
@@ -103,7 +121,8 @@ router.post('/test', async (req: Request, res: Response) => {
         ok: true,
         provider,
         status: response.status,
-        message: 'Autenticacao validada com sucesso.',
+        message: `Autenticacao validada com sucesso${keyInformada ? '' : ' usando a variavel do backend'}.`,
+        source: keyInformada ? 'request' : 'env',
       })
     }
 
@@ -117,6 +136,7 @@ router.post('/test', async (req: Request, res: Response) => {
       status: response.status,
       message: `${providerLabel}: ${detalhe}`,
       details: bodyText,
+      source: keyInformada ? 'request' : 'env',
     })
   } catch (error) {
     return res.status(502).json({
@@ -124,6 +144,7 @@ router.post('/test', async (req: Request, res: Response) => {
       provider,
       status: 502,
       message: `Erro de rede no backend ao validar ${provider}: ${error instanceof Error ? error.message : String(error)}`,
+      source: keyInformada ? 'request' : 'env',
     })
   }
 })

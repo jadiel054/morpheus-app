@@ -27,6 +27,7 @@ import { analyzeSentiment, selectArchetype, buildPersonalityLayer } from '../com
 import { kairos } from '../components/morpheus/agents/kairosEngine'
 import { getDeviceId, getDeviceLabel, getIpInfo, isDeviceTrusted, trustDevice, registerSession } from '../components/morpheus/security/deviceGuard'
 import { buildContentWithAttachments } from '../lib/fileAttachmentHandler'
+import { getApiBaseUrl } from '../lib/apiBaseUrl'
 import { shouldAutoSearch, webSearch, formatSearchResults } from '../components/morpheus/tools/webSearch'
 import { classifyGitHubError, investigateNotFound } from '../lib/errorHandler'
 
@@ -311,7 +312,7 @@ export default function Morpheus() {
   const [memory, setMemory] = useState(() => loadUserMemory(user?.id || 'local'))
   const messagesEndRef = useRef(null)
   const activeTab = tabs.find(t => t.id === activeTabId) || tabs[0]
-  const apiBaseUrl = import.meta.env.VITE_API_URL || window.location.origin
+  const apiBaseUrl = getApiBaseUrl()
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [activeTab?.messages])
 

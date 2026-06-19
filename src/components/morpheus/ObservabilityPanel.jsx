@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { X } from 'lucide-react'
 import { useAuth } from '../../lib/authContext'
+import { getApiBaseUrl } from '../../lib/apiBaseUrl'
 
 function getNested(obj, path) {
   return path.split('.').reduce((o, k) => (o && o[k] !== undefined) ? o[k] : '', obj)
@@ -95,7 +96,7 @@ function getTelegramStatus() {
 
 export function ObservabilityPanel({ onClose }) {
   const { session } = useAuth()
-  const apiBaseUrl = import.meta.env.VITE_API_URL || window.location.origin
+  const apiBaseUrl = getApiBaseUrl()
   const [activeTab, setActiveTab] = useState('overview')
   const [toolResults, setToolResults] = useState({})
   const [testingAll, setTestingAll] = useState(false)

@@ -2,6 +2,7 @@ import { useState, createContext, useContext, useEffect } from 'react'
 import { X } from 'lucide-react'
 import { useAuth } from '../../lib/authContext'
 import { supabase } from '../../lib/supabaseClient'
+import { getApiBaseUrl } from '../../lib/apiBaseUrl'
 import { useKokoroTTS } from './useKokoroTTS'
 import { KokoroDownloadManager } from './KokoroDownloadManager'
 import { testGitHubTokenScopes } from '../../lib/errorHandler'
@@ -82,7 +83,7 @@ function setNested(obj, path, value) {
 export function SettingsPanel({ settings, onUpdate, onClose, initialIntegrations }) {
   const { user, session } = useAuth()
   const kokoroHook = useKokoroTTS()
-  const apiBaseUrl = import.meta.env.VITE_API_URL || window.location.origin
+  const apiBaseUrl = getApiBaseUrl()
   const [activeTab, setActiveTab] = useState('Perfil')
   const [saveStatus, setSaveStatus] = useState('')
   const [testingVoice, setTestingVoice] = useState(false)
