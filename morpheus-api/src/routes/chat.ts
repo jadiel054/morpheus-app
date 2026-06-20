@@ -152,7 +152,7 @@ const TOOL_DEFINITIONS = [
         type: 'object',
         properties: {
           table: { type: 'string' },
-          filter: { type: 'object', additionalProperties: true },
+          filter: { type: 'string', description: 'JSON string com filtros no formato {"campo":"valor"}' },
           columns: { type: 'string' },
           limit: { type: 'number' },
         },
@@ -169,7 +169,7 @@ const TOOL_DEFINITIONS = [
         type: 'object',
         properties: {
           table: { type: 'string' },
-          data: { type: 'object', additionalProperties: true },
+          data: { type: 'string', description: 'JSON string com objeto ou array de objetos para upsert' },
         },
         required: ['table', 'data'],
       },
@@ -205,6 +205,86 @@ function safeJsonParse<T = Record<string, unknown>>(value: string | undefined, f
   } catch {
     return fallback
   }
+}
+
+function parseJsonStringArgument<T>(value: unknown, nomeCampo: string, fallback?: T): T {
+  if (typeof value === 'string') {
+    const conteudo = value.trim()
+    if (!conteudo) {
+      if (fallback !== undefined) return fallback
+      throw new Error(`${nomeCampo} e obrigatorio`)
+    }
+    try {
+      return JSON.parse(conteudo) as T
+    } catch {
+      throw new Error(`${nomeCampo} deve ser um JSON valido`)
+    }
+  }
+
+  if (value === undefined || value === null) {
+    if (fallback !== undefined) return fallback
+    throw new Error(`${nomeCampo} e obrigatorio`)
+  }
+
+  return value as T
+}
+
+function removerAdditionalPropertiesDoSchema(schema: unknown): unknown {
+  if (Array.isArray(schema)) {
+    return schema.map(removerAdditionalPropertiesDoSchema)
+  }
+
+  if (!schema || typeof schema !== 'object') {
+    return schema
+  }
+
+  const entrada = schema as Record<string, unknown>
+  const saida: Record<string, unknown> = {}
+
+  for (const [chave, valor] of Object.entries(entrada)) {
+    if (chave === 'additionalProperties') continue
+    saida[chave] = removerAdditionalPropertiesDoSchema(valor)
+  }
+
+  return saida
+}
+
+function enforceStrictSchema(schema: unknown): unknown {
+  if (Array.isArray(schema)) {
+    return schema.map(enforceStrictSchema)
+  }
+
+  if (!schema || typeof schema !== 'object') {
+    return schema
+  }
+
+  const entrada = schema as Record<string, unknown>
+  const saida: Record<string, unknown> = {}
+
+  for (const [chave, valor] of Object.entries(entrada)) {
+    if (chave === 'properties' && valor && typeof valor === 'object' && !Array.isArray(valor)) {
+      saida[chave] = Object.fromEntries(
+        Object.entries(valor as Record<string, unknown>).map(([nomePropriedade, schemaPropriedade]) => [
+          nomePropriedade,
+          enforceStrictSchema(schemaPropriedade),
+        ]),
+      )
+      continue
+    }
+
+    if (chave === 'additionalProperties') continue
+    saida[chave] = enforceStrictSchema(valor)
+  }
+
+  if (saida.type === 'object') {
+    const properties = saida.properties
+    if (!properties || typeof properties !== 'object' || Array.isArray(properties)) {
+      saida.properties = {}
+    }
+    saida.additionalProperties = false
+  }
+
+  return saida
 }
 
 function normalizeApiKey(value: unknown) {
@@ -458,7 +538,7 @@ function converterToolsParaGemini(tools: typeof TOOL_DEFINITIONS) {
     functionDeclarations: tools.map((tool) => ({
       name: tool.function.name,
       description: tool.function.description,
-      parameters: tool.function.parameters,
+      parameters: removerAdditionalPropertiesDoSchema(tool.function.parameters),
     })),
   }]
 }
@@ -468,6 +548,7 @@ function converterToolsParaCerebras(tools: typeof TOOL_DEFINITIONS) {
     ...tool,
     function: {
       ...tool.function,
+      parameters: enforceStrictSchema(tool.function.parameters),
       strict: true,
     },
   }))
@@ -1137,7 +1218,11 @@ export async function processarPipelineChat(
                 const table = String((args as Record<string, unknown>).table || '')
                 const columns = String((args as Record<string, unknown>).columns || '*')
                 const limit = Number((args as Record<string, unknown>).limit || 50)
-                const filter = ((args as Record<string, unknown>).filter || {}) as Record<string, string | number | boolean>
+                const filter = parseJsonStringArgument<Record<string, string | number | boolean>>(
+                  (args as Record<string, unknown>).filter,
+                  'filter',
+                  {},
+                )
                 if (!table) throw new Error('table e obrigatoria')
 
                 let query = supabase.from(table).select(columns).limit(Math.min(limit, 1000))
@@ -1152,7 +1237,10 @@ export async function processarPipelineChat(
               case 'supabase_upsert': {
                 const supabase = obterSupabaseAdmin()
                 const table = String((args as Record<string, unknown>).table || '')
-                const data = (args as Record<string, unknown>).data
+                const data = parseJsonStringArgument<Record<string, unknown> | Array<Record<string, unknown>>>(
+                  (args as Record<string, unknown>).data,
+                  'data',
+                )
                 if (!table || !data) throw new Error('table e data sao obrigatorios')
                 const payload = Array.isArray(data) ? data : [data]
                 const { data: upserted, error } = await supabase.from(table).upsert(payload).select()
