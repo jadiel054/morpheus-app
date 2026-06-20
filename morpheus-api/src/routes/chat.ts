@@ -53,7 +53,12 @@ const TOOL_DEFINITIONS = [
     function: {
       name: 'github_list_repos',
       description: 'Lista repositórios do GitHub autenticado.',
-      parameters: { type: 'object', properties: {} },
+      parameters: {
+        type: 'object',
+        properties: {
+          contexto: { type: 'string', description: 'Opcional. Use vazio para listar os repositórios autenticados.' },
+        },
+      },
     },
   },
   {

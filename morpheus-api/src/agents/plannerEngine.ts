@@ -181,7 +181,9 @@ export const TOOLS_PLANNER = [
       description: 'Retorna o plano atual.',
       parameters: {
         type: 'object',
-        properties: {},
+        properties: {
+          detalhe: { type: 'string', description: 'Opcional. Use vazio para consultar o plano atual.' },
+        },
       },
     },
   },
