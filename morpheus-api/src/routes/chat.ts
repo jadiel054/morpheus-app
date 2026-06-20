@@ -254,6 +254,32 @@ function removerAdditionalPropertiesDoSchema(schema: unknown): unknown {
   return saida
 }
 
+function permitirNuloNoSchema(schema: unknown): unknown {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) {
+    return schema
+  }
+
+  const saida: Record<string, unknown> = { ...(schema as Record<string, unknown>) }
+  const tipoAtual = saida.type
+
+  if (typeof tipoAtual === 'string') {
+    saida.type = tipoAtual === 'null' ? ['null'] : [tipoAtual, 'null']
+  } else if (Array.isArray(tipoAtual)) {
+    saida.type = tipoAtual.includes('null') ? tipoAtual : [...tipoAtual, 'null']
+  } else if (Array.isArray(saida.anyOf)) {
+    const anyOf = saida.anyOf as Array<Record<string, unknown>>
+    if (!anyOf.some((item) => item?.type === 'null')) {
+      saida.anyOf = [...anyOf, { type: 'null' }]
+    }
+  }
+
+  if (Array.isArray(saida.enum) && !saida.enum.includes(null)) {
+    saida.enum = [...saida.enum, null]
+  }
+
+  return saida
+}
+
 function enforceStrictSchema(schema: unknown): unknown {
   if (Array.isArray(schema)) {
     return schema.map(enforceStrictSchema)
@@ -265,19 +291,29 @@ function enforceStrictSchema(schema: unknown): unknown {
 
   const entrada = schema as Record<string, unknown>
   const saida: Record<string, unknown> = {}
+  const requiredOriginais = new Set(
+    Array.isArray(entrada.required)
+      ? entrada.required.filter((item): item is string => typeof item === 'string')
+      : [],
+  )
 
   for (const [chave, valor] of Object.entries(entrada)) {
     if (chave === 'properties' && valor && typeof valor === 'object' && !Array.isArray(valor)) {
-      saida[chave] = Object.fromEntries(
-        Object.entries(valor as Record<string, unknown>).map(([nomePropriedade, schemaPropriedade]) => [
-          nomePropriedade,
-          enforceStrictSchema(schemaPropriedade),
-        ]),
+      const propriedadesEstritas = Object.fromEntries(
+        Object.entries(valor as Record<string, unknown>).map(([nomePropriedade, schemaPropriedade]) => {
+          const schemaEstrito = enforceStrictSchema(schemaPropriedade)
+          return [
+            nomePropriedade,
+            requiredOriginais.has(nomePropriedade) ? schemaEstrito : permitirNuloNoSchema(schemaEstrito),
+          ]
+        }),
       )
+      saida[chave] = propriedadesEstritas
       continue
     }
 
     if (chave === 'additionalProperties') continue
+    if (chave === 'required') continue
     saida[chave] = enforceStrictSchema(valor)
   }
 
@@ -286,6 +322,7 @@ function enforceStrictSchema(schema: unknown): unknown {
     if (!properties || typeof properties !== 'object' || Array.isArray(properties)) {
       saida.properties = {}
     }
+    saida.required = Object.keys(saida.properties as Record<string, unknown>)
     saida.additionalProperties = false
   }
 
