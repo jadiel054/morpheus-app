@@ -596,9 +596,9 @@ function converterToolsParaCerebras(tools: typeof TOOL_DEFINITIONS) {
   }))
 }
 
-function converterConversationParaCerebras(conversation: Array<ConversationMessage>): Array<Record<string, unknown>> {
+function converterConversationParaCerebras(conversation: Array<ConversationMessage>, modelId: string): Array<Record<string, unknown>> {
   return conversation.map((item) => {
-    if (item.role === 'assistant' && item.tool_calls?.length) {
+    if (item.role === 'assistant' && item.tool_calls?.length && modelId === 'llama-3.3-70b') {
       return {
         role: 'assistant',
         content: extrairTextoConteudo(item.content),
@@ -873,7 +873,7 @@ async function chamarModelo(
               : modelo.provider === 'cerebras'
                 ? {
                     model: modelo.id,
-                    messages: converterConversationParaCerebras(conversation),
+                    messages: converterConversationParaCerebras(conversation, modelo.id),
                     tools: modelo.suportaTools ? converterToolsParaCerebras(tools) : undefined,
                     tool_choice: modelo.suportaTools ? 'auto' : undefined,
                     max_completion_tokens: Math.min(modelo.maxTokens, 4096),
