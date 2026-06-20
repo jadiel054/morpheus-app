@@ -869,28 +869,29 @@ async function executarToolComCircuito(nomeTool: string, executor: () => Promise
   }
 }
 
-router.post('/', authenticate, async (req: Request, res: Response) => {
-  const { messages, apiKeys, model, conversationId, providerOrder: providerOrderBody } = req.body as {
-    messages?: Array<{ role: string, content: string | MessagePart[] | null }>
-    apiKeys?: Record<string, string>
-    model?: string
-    conversationId?: string
-    providerOrder?: string[]
-  }
+export type ChatRequestPayload = {
+  messages?: Array<{ role: string, content: string | MessagePart[] | null }>
+  apiKeys?: Record<string, string>
+  model?: string
+  conversationId?: string
+  providerOrder?: string[]
+}
 
+export type ChatExecutionResult = {
+  content: string
+  model: string
+  loops: number
+  tokensUsed: number
+}
+
+export async function processarPipelineChat(
+  payload: ChatRequestPayload,
+  sendEvent: (type: string, data: Record<string, unknown>) => void = () => {},
+): Promise<ChatExecutionResult> {
+  const { messages, apiKeys, model, conversationId, providerOrder: providerOrderBody } = payload
   if (!messages?.length) {
-    return res.status(400).json({ error: 'messages required' })
+    throw new Error('messages required')
   }
-
-  res.setHeader('Content-Type', 'text/event-stream')
-  res.setHeader('Cache-Control', 'no-cache')
-  res.setHeader('Connection', 'keep-alive')
-  res.setHeader('X-Accel-Buffering', 'no')
-
-  const sendEvent = (type: string, data: Record<string, unknown>) => {
-    res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`)
-  }
-  const sendDone = () => res.write('event: done\ndata: {}\n\n')
 
   const mensagensNormalizadas = normalizarMensagensEntrada(messages)
   const ultimaMensagem = ultimaMensagemTexto(mensagensNormalizadas)
@@ -1259,14 +1260,44 @@ router.post('/', authenticate, async (req: Request, res: Response) => {
 
     sendEvent('content', { content: finalContent, model: modeloUsado, loops: loopCount, tokensUsed: totalTokensUsed })
     sendEvent('plan_update', { step: 'synthesize', status: 'done' })
-    sendDone()
-    res.end()
+    return {
+      content: finalContent,
+      model: modeloUsado,
+      loops: loopCount,
+      tokensUsed: totalTokensUsed,
+    }
   } catch (error) {
     if (planner.planoAtual && planner.planoAtual.status === 'ativo') {
       await planner.finalizarPlano(false)
     }
 
     sendEvent('error', { message: serializarErro(error) })
+    throw error
+  }
+}
+
+router.post('/', authenticate, async (req: Request, res: Response) => {
+  const payload = req.body as ChatRequestPayload
+
+  if (!payload.messages?.length) {
+    return res.status(400).json({ error: 'messages required' })
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Connection', 'keep-alive')
+  res.setHeader('X-Accel-Buffering', 'no')
+
+  const sendEvent = (type: string, data: Record<string, unknown>) => {
+    res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`)
+  }
+  const sendDone = () => res.write('event: done\ndata: {}\n\n')
+
+  try {
+    await processarPipelineChat(payload, sendEvent)
+    sendDone()
+    res.end()
+  } catch {
     sendDone()
     res.end()
   }

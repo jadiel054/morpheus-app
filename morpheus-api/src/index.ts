@@ -5,7 +5,7 @@ import chatRouter from './routes/chat.js'
 import githubRouter from './routes/github.js'
 import memoryRouter from './routes/memory.js'
 import deployRouter from './routes/deploy.js'
-import telegramRouter from './routes/telegram.js'
+import telegramRouter, { setupTelegramIntegration } from './routes/telegram.js'
 import emailRouter from './routes/email.js'
 import healthRouter from './routes/health.js'
 import credentialsRouter from './routes/credentials.js'
@@ -27,7 +27,7 @@ app.use('/api/credentials', authMiddleware, credentialsRouter)
 app.use('/api/github', authMiddleware, githubRouter)
 app.use('/api/memory', authMiddleware, memoryRouter)
 app.use('/api/deploy', authMiddleware, deployRouter)
-app.use('/api/telegram', authMiddleware, telegramRouter)
+app.use('/api/telegram', telegramRouter)
 app.use('/api/email', authMiddleware, emailRouter)
 
 app.use((_req, res) => res.status(404).json({ error: 'Route not found' }))
@@ -36,6 +36,9 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
   res.status(500).json({ error: 'Internal server error', message: err.message })
 })
 
-app.listen(PORT, () => console.log(`[MORPHEUS API] Nebuchadnezzar v1.0 running on port ${PORT}`))
+app.listen(PORT, () => {
+  console.log(`[MORPHEUS API] Nebuchadnezzar v1.0 running on port ${PORT}`)
+  void setupTelegramIntegration()
+})
 
 export default app
