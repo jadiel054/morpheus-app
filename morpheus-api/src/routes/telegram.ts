@@ -35,7 +35,7 @@ function getTelegramAllowedChatId() {
 }
 
 function getTelegramWebhookSecret() {
-  return String(process.env.TELEGRAM_WEBHOOK_SECRET || `${getTelegramBotToken().slice(0, 12)}-jarvis-webhook`).trim()
+  return String(process.env.TELEGRAM_WEBHOOK_SECRET || '').trim()
 }
 
 function getPublicBackendUrl() {
@@ -273,7 +273,8 @@ router.post('/webhook', async (req: Request, res: Response) => {
   const secretToken = getTelegramWebhookSecret()
   const headerSecret = normalizeTelegramText(req.header('x-telegram-bot-api-secret-token'))
 
-  if (secretToken && headerSecret && headerSecret !== secretToken) {
+  if (secretToken && headerSecret !== secretToken) {
+    console.warn('[Telegram] Webhook rejeitado por secret_token invalido')
     return res.status(401).json({ ok: false, error: 'Webhook secret invalido' })
   }
 
