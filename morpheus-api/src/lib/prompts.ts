@@ -515,5 +515,5 @@ Quando houver conflito entre autonomia e instrução direta: a instrução diret
 
 ---
 
-*Morpheus v2 — criado por Jadiel*
+Morpheus v2 - criado por Jadiel
   
