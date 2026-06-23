@@ -17,6 +17,19 @@ import {
 import { obterSupabaseAdmin, supabaseAdmin } from '../lib/supabaseAdmin.js'
 import { branchProtegida, gerarBranchAutonomo, resumirExecucaoAutonoma } from '../lib/autonomyPolicy.js'
 import { observabilityStore } from '../lib/observabilityStore.js'
+import { githubDiagnosticsStore } from '../lib/githubDiagnostics.js'
+import {
+  GithubResolverError,
+  createGithubBranchFromBase,
+  createGithubPullRequest,
+  getGithubContent,
+  getGithubFileSha,
+  putGithubFile,
+  resolveGithubContext,
+  resolveGithubRepository,
+  verifyGithubConnection,
+  listGithubRepositories,
+} from '../lib/githubRepositoryResolver.js'
 
 const router = Router()
 
@@ -30,6 +43,7 @@ const MAX_SYSTEM_PROMPT_CHARS = 3_500
 const MAX_TOOL_RESULT_CHARS = 1_200
 const MAX_REPEATED_TOOL_CALLS = 2
 const GITHUB_DEFAULT_OWNER = process.env.GITHUB_OWNER || 'jadiel054'
+const GITHUB_DEFAULT_REPOSITORY = process.env.GITHUB_DEFAULT_REPOSITORY || 'morpheus-app'
 
 type Provider = 'groq' | 'openrouter' | 'anthropic' | 'openai' | 'google' | 'cerebras'
 type TextPart = { type: 'text', text: string }
@@ -72,6 +86,9 @@ type AuditState = {
 
 const READ_ONLY_TOOLS = [
   'github_list_repos',
+  'github_list_repositories',
+  'github_verify_connection',
+  'github_resolve_repository',
   'github_read_file',
   'github_list_files',
   'supabase_query',
@@ -85,7 +102,7 @@ const TOOL_DEFINITIONS = [
     type: 'function',
     function: {
       name: 'github_list_repos',
-      description: 'Lista repositórios do GitHub autenticado.',
+      description: 'Lista repositórios reais do GitHub autenticado. Use para descoberta antes de ler ou editar qualquer repositório.',
       parameters: {
         type: 'object',
         properties: {
@@ -97,16 +114,58 @@ const TOOL_DEFINITIONS = [
   {
     type: 'function',
     function: {
+      name: 'github_verify_connection',
+      description: 'Verifica autenticação do GitHub e retorna o usuário autenticado e a quantidade de repositórios reais disponíveis.',
+      parameters: {
+        type: 'object',
+        properties: {},
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'github_list_repositories',
+      description: 'Alias explícito para listar repositórios reais do GitHub autenticado.',
+      parameters: {
+        type: 'object',
+        properties: {
+          contexto: { type: 'string' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'github_resolve_repository',
+      description: 'Resolve o repositório real no GitHub a partir de nome informal como "Morpheus", "repo morpheus" ou contexto genérico do usuário.',
+      parameters: {
+        type: 'object',
+        properties: {
+          repo: { type: 'string', description: 'Nome ou apelido informado pelo usuário.' },
+          repository: { type: 'string', description: 'Alias para repo.' },
+          owner: { type: 'string' },
+          contexto: { type: 'string', description: 'Mensagem do usuário para ajudar a resolver o repositório padrão quando necessário.' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'github_read_file',
-      description: 'Lê o conteúdo real de um arquivo do GitHub.',
+      description: 'Lê o conteúdo real de um arquivo do GitHub somente após validar owner, repo, branch e path contra a API real.',
       parameters: {
         type: 'object',
         properties: {
           repo: { type: 'string' },
+          repository: { type: 'string' },
           path: { type: 'string' },
           owner: { type: 'string' },
+          branch: { type: 'string' },
         },
-        required: ['repo', 'path'],
+        required: ['path'],
       },
     },
   },
@@ -114,15 +173,17 @@ const TOOL_DEFINITIONS = [
     type: 'function',
     function: {
       name: 'github_list_files',
-      description: 'Lista arquivos de um caminho no repositório.',
+      description: 'Lista arquivos reais de um caminho no repositório após resolver e validar o repositório no GitHub.',
       parameters: {
         type: 'object',
         properties: {
           repo: { type: 'string' },
+          repository: { type: 'string' },
           path: { type: 'string' },
           owner: { type: 'string' },
+          branch: { type: 'string' },
         },
-        required: ['repo'],
+        required: [],
       },
     },
   },
@@ -130,18 +191,19 @@ const TOOL_DEFINITIONS = [
     type: 'function',
     function: {
       name: 'github_commit_file',
-      description: 'Cria ou atualiza um arquivo em um repositório do GitHub. Em autonomia, prefira branch temporária e PR.',
+      description: 'Cria ou atualiza um arquivo em um repositório do GitHub somente após validar repositório, branch e path reais. Em autonomia, prefira branch temporária e PR.',
       parameters: {
         type: 'object',
         properties: {
           repo: { type: 'string' },
+          repository: { type: 'string' },
           path: { type: 'string' },
           content: { type: 'string' },
           message: { type: 'string' },
           branch: { type: 'string' },
           owner: { type: 'string' },
         },
-        required: ['repo', 'path', 'content', 'message'],
+        required: ['path', 'content', 'message'],
       },
     },
   },
@@ -149,16 +211,17 @@ const TOOL_DEFINITIONS = [
     type: 'function',
     function: {
       name: 'github_create_branch',
-      description: 'Cria uma nova branch para execução autônoma segura.',
+      description: 'Cria uma nova branch usando como base a default_branch real retornada pela API do GitHub.',
       parameters: {
         type: 'object',
         properties: {
           repo: { type: 'string' },
+          repository: { type: 'string' },
           branch: { type: 'string' },
           from: { type: 'string' },
           owner: { type: 'string' },
         },
-        required: ['repo', 'branch'],
+        required: ['branch'],
       },
     },
   },
@@ -166,18 +229,19 @@ const TOOL_DEFINITIONS = [
     type: 'function',
     function: {
       name: 'github_create_pr',
-      description: 'Abre pull request com mudanças feitas em branch temporária.',
+      description: 'Abre pull request com mudanças feitas em branch temporária após validar o repositório real.',
       parameters: {
         type: 'object',
         properties: {
           repo: { type: 'string' },
+          repository: { type: 'string' },
           title: { type: 'string' },
           body: { type: 'string' },
           head: { type: 'string' },
           base: { type: 'string' },
           owner: { type: 'string' },
         },
-        required: ['repo', 'title', 'head'],
+        required: ['title', 'head'],
       },
     },
   },
@@ -1431,6 +1495,12 @@ export async function processarPipelineChat(
     executedTools: [],
     loopTransitions: [],
   }
+  const githubResolverDefaults = {
+    token: apiKeys?.github || process.env.GITHUB_TOKEN || '',
+    defaultOwner: GITHUB_DEFAULT_OWNER,
+    defaultRepository: GITHUB_DEFAULT_REPOSITORY,
+    userIntent: ultimaMensagem,
+  }
 
   const contextoSistema = compactarTexto([
     montarPrompt('planejamento', `Tipo de tarefa: ${tipoTarefa}\nSe o modelo atual não suportar tools ou visão para concluir a tarefa, explique isso claramente e sugira um modelo compatível.`),
@@ -1572,121 +1642,190 @@ export async function processarPipelineChat(
           try {
             const resultado = await executarToolComCircuito(toolCall.function.name, async () => {
               switch (toolCall.function.name) {
+                case 'github_verify_connection': {
+                  if (!githubResolverDefaults.token) throw new Error('GITHUB_TOKEN nao configurado')
+                  const verification = await verifyGithubConnection(
+                    githubResolverDefaults.token,
+                    githubResolverDefaults.defaultOwner,
+                    githubResolverDefaults.defaultRepository,
+                  )
+                  githubDiagnosticsStore.recordMany(verification.diagnostics)
+                  return JSON.stringify(verification)
+                }
+                case 'github_list_repositories':
                 case 'github_list_repos': {
-                  const token = apiKeys?.github || process.env.GITHUB_TOKEN || ''
-                  if (!token) throw new Error('GITHUB_TOKEN nao configurado')
-                  const data = await githubRequest('/user/repos?per_page=100&sort=updated', { method: 'GET' }, token)
-                  return JSON.stringify(data)
+                  if (!githubResolverDefaults.token) throw new Error('GITHUB_TOKEN nao configurado')
+                  const repositories = await listGithubRepositories(githubResolverDefaults.token)
+                  return JSON.stringify(repositories.map((repository) => ({
+                    owner: repository.owner?.login || repository.full_name.split('/')[0] || GITHUB_DEFAULT_OWNER,
+                    repo: repository.name,
+                    full_name: repository.full_name,
+                    default_branch: repository.default_branch,
+                    private: Boolean(repository.private),
+                    description: repository.description || null,
+                  })))
+                }
+                case 'github_resolve_repository': {
+                  if (!githubResolverDefaults.token) throw new Error('GITHUB_TOKEN nao configurado')
+                  const resolved = await resolveGithubRepository({
+                    ...githubResolverDefaults,
+                    requestedRepository: String(
+                      (args as Record<string, unknown>).repository
+                      || (args as Record<string, unknown>).repo
+                      || '',
+                    ),
+                    requestedOwner: String((args as Record<string, unknown>).owner || ''),
+                    userIntent: String((args as Record<string, unknown>).contexto || githubResolverDefaults.userIntent || ''),
+                  })
+                  githubDiagnosticsStore.recordMany(resolved.diagnostics)
+                  return JSON.stringify({
+                    owner: resolved.owner,
+                    repo: resolved.repo,
+                    confidence: resolved.confidence,
+                    defaultBranch: resolved.defaultBranch,
+                    resolvedRepository: resolved.resolvedRepository,
+                  })
                 }
                 case 'github_read_file': {
-                  const token = apiKeys?.github || process.env.GITHUB_TOKEN || ''
-                  if (!token) throw new Error('GITHUB_TOKEN nao configurado')
-                  const repo = String((args as Record<string, unknown>).repo || '')
+                  if (!githubResolverDefaults.token) throw new Error('GITHUB_TOKEN nao configurado')
                   const path = String((args as Record<string, unknown>).path || '')
-                  const owner = String((args as Record<string, unknown>).owner || GITHUB_DEFAULT_OWNER)
-                  if (!repo || !path) throw new Error('repo e path sao obrigatorios')
-                  const data = await githubRequest(`/repos/${owner}/${repo}/contents/${path}`, { method: 'GET' }, token) as { content?: string, sha?: string, size?: number }
+                  if (!path) throw new Error('path e obrigatorio')
+                  const context = await resolveGithubContext({
+                    ...githubResolverDefaults,
+                    requestedRepository: String(
+                      (args as Record<string, unknown>).repository
+                      || (args as Record<string, unknown>).repo
+                      || '',
+                    ),
+                    requestedOwner: String((args as Record<string, unknown>).owner || ''),
+                    requestedBranch: String((args as Record<string, unknown>).branch || ''),
+                    requestedPath: path,
+                    requirePath: true,
+                  })
+                  const data = await getGithubContent(context, githubResolverDefaults.token) as { content?: string, sha?: string, size?: number }
                   const content = data.content ? Buffer.from(data.content.replace(/\n/g, ''), 'base64').toString('utf-8') : ''
-                  return JSON.stringify({ repo, owner, path, content, sha: data.sha, size: data.size })
+                  githubDiagnosticsStore.recordMany(context.diagnostics)
+                  return JSON.stringify({
+                    repo: context.repo,
+                    owner: context.owner,
+                    path: context.path,
+                    branch: context.branch,
+                    content,
+                    sha: data.sha,
+                    size: data.size,
+                    diagnostics: context.diagnostics,
+                  })
                 }
                 case 'github_list_files': {
-                  const token = apiKeys?.github || process.env.GITHUB_TOKEN || ''
-                  if (!token) throw new Error('GITHUB_TOKEN nao configurado')
-                  const repo = String((args as Record<string, unknown>).repo || '')
-                  const path = String((args as Record<string, unknown>).path || '')
-                  const owner = String((args as Record<string, unknown>).owner || GITHUB_DEFAULT_OWNER)
-                  if (!repo) throw new Error('repo e obrigatorio')
-                  const sufixo = path ? `/${path}` : ''
-                  const data = await githubRequest(`/repos/${owner}/${repo}/contents${sufixo}`, { method: 'GET' }, token)
-                  return JSON.stringify(data)
+                  if (!githubResolverDefaults.token) throw new Error('GITHUB_TOKEN nao configurado')
+                  const context = await resolveGithubContext({
+                    ...githubResolverDefaults,
+                    requestedRepository: String(
+                      (args as Record<string, unknown>).repository
+                      || (args as Record<string, unknown>).repo
+                      || '',
+                    ),
+                    requestedOwner: String((args as Record<string, unknown>).owner || ''),
+                    requestedBranch: String((args as Record<string, unknown>).branch || ''),
+                    requestedPath: String((args as Record<string, unknown>).path || ''),
+                    requirePath: false,
+                  })
+                  const data = await getGithubContent(context, githubResolverDefaults.token)
+                  githubDiagnosticsStore.recordMany(context.diagnostics)
+                  return JSON.stringify({
+                    owner: context.owner,
+                    repo: context.repo,
+                    branch: context.branch,
+                    path: context.path,
+                    data,
+                    diagnostics: context.diagnostics,
+                  })
                 }
                 case 'github_commit_file': {
-                  const token = apiKeys?.github || process.env.GITHUB_TOKEN || ''
-                  if (!token) throw new Error('GITHUB_TOKEN nao configurado')
+                  if (!githubResolverDefaults.token) throw new Error('GITHUB_TOKEN nao configurado')
 
-                  const repo = String((args as Record<string, unknown>).repo || '')
                   const path = String((args as Record<string, unknown>).path || '')
                   const content = String((args as Record<string, unknown>).content || '')
                   const message = String((args as Record<string, unknown>).message || '')
                   const branchInformada = String((args as Record<string, unknown>).branch || '')
-                  const owner = String((args as Record<string, unknown>).owner || GITHUB_DEFAULT_OWNER)
 
-                  if (!repo || !path || !content || !message) {
-                    throw new Error('repo, path, content e message sao obrigatorios')
+                  if (!path || !content || !message) {
+                    throw new Error('path, content e message sao obrigatorios')
                   }
 
-                  const branchBase = 'main'
+                  const context = await resolveGithubContext({
+                    ...githubResolverDefaults,
+                    requestedRepository: String(
+                      (args as Record<string, unknown>).repository
+                      || (args as Record<string, unknown>).repo
+                      || '',
+                    ),
+                    requestedOwner: String((args as Record<string, unknown>).owner || ''),
+                    requestedBranch: branchInformada,
+                    requestedPath: path,
+                    requirePath: false,
+                  })
+
+                  const branchBase = context.defaultBranch
                   const usarFluxoSeguro = !branchInformada || branchProtegida(branchInformada)
-                  const branch = usarFluxoSeguro ? gerarBranchAutonomo('patch') : branchInformada
+                  const branch = usarFluxoSeguro ? gerarBranchAutonomo('patch') : context.branch
 
                   let sha: string | undefined
                   try {
-                    const atual = await githubRequest(`/repos/${owner}/${repo}/contents/${path}`, { method: 'GET' }, token) as { sha?: string }
-                    sha = atual.sha
-                  } catch {
-                    sha = undefined
+                    sha = await getGithubFileSha(context, githubResolverDefaults.token)
+                  } catch (error) {
+                    if (!(error instanceof GithubResolverError) || error.status !== 404) {
+                      throw error
+                    }
                   }
 
                   if (usarFluxoSeguro) {
-                    const refBase = await githubRequest(`/repos/${owner}/${repo}/git/ref/heads/${branchBase}`, { method: 'GET' }, token) as { object?: { sha?: string } }
-                    const shaBase = refBase.object?.sha
-                    if (!shaBase) throw new Error('Nao foi possivel obter a branch base para criar branch autonoma')
-
-                    await githubRequest(`/repos/${owner}/${repo}/git/refs`, {
-                      method: 'POST',
-                      body: JSON.stringify({ ref: `refs/heads/${branch}`, sha: shaBase }),
-                    }, token)
+                    await createGithubBranchFromBase(githubResolverDefaults.token, context, branch, branchBase)
                   }
 
-                  const body = {
+                  const data = await putGithubFile(
+                    githubResolverDefaults.token,
+                    context,
+                    content,
                     message,
-                    content: Buffer.from(content, 'utf-8').toString('base64'),
                     branch,
-                    ...(sha ? { sha } : {}),
-                  }
-
-                  const data = await githubRequest(`/repos/${owner}/${repo}/contents/${path}`, {
-                    method: 'PUT',
-                    body: JSON.stringify(body),
-                  }, token) as {
-                    commit?: { sha?: string, html_url?: string }
-                    content?: { html_url?: string }
-                  }
+                    sha,
+                  )
 
                   let prUrl: string | undefined
                   let prNumber: number | undefined
                   if (usarFluxoSeguro) {
-                    const pr = await githubRequest(`/repos/${owner}/${repo}/pulls`, {
-                      method: 'POST',
-                      body: JSON.stringify({
-                        title: message,
-                        body: `Alteração autônoma criada pelo Morpheus para \`${path}\`.\n\nFluxo seguro: branch temporária + PR.`,
-                        head: branch,
-                        base: branchBase,
-                      }),
-                    }, token) as { html_url?: string, number?: number }
-
+                    const pr = await createGithubPullRequest(
+                      githubResolverDefaults.token,
+                      context,
+                      message,
+                      `Alteração autônoma criada pelo Morpheus para \`${context.path}\`.\n\nFluxo seguro: branch temporária + PR.`,
+                      branch,
+                      branchBase,
+                    )
                     prUrl = pr.html_url
                     prNumber = pr.number
                   }
 
+                  githubDiagnosticsStore.recordMany(context.diagnostics)
+
                   await reflector.refletir({
-                    acao: `commit no arquivo ${path} do repositório ${repo}`,
-                    resultado: prUrl || data.commit?.html_url || data.content?.html_url || `Commit realizado em ${owner}/${repo}`,
+                    acao: `commit no arquivo ${context.path} do repositório ${context.repo}`,
+                    resultado: prUrl || data.commit?.html_url || data.content?.html_url || `Commit realizado em ${context.owner}/${context.repo}`,
                     sucesso: true,
                     melhorias: usarFluxoSeguro ? ['Revisar o PR antes do merge em produção'] : [],
                   })
 
                   return JSON.stringify({
                     ...resumirExecucaoAutonoma({
-                      objetivo: `Atualizar ${path}`,
+                      objetivo: `Atualizar ${context.path}`,
                       branch,
-                      repo,
+                      repo: context.repo,
                       prUrl: prUrl || null,
                     }),
-                    repo,
-                    owner,
-                    path,
+                    repo: context.repo,
+                    owner: context.owner,
+                    path: context.path,
                     branch,
                     baseBranch: branchBase,
                     modo: usarFluxoSeguro ? 'branch_temporaria_pr' : 'commit_direto',
@@ -1694,45 +1833,78 @@ export async function processarPipelineChat(
                     commitUrl: data.commit?.html_url || data.content?.html_url,
                     prUrl,
                     prNumber,
+                    diagnostics: context.diagnostics,
                   })
                 }
                 case 'github_create_branch': {
-                  const token = apiKeys?.github || process.env.GITHUB_TOKEN || ''
-                  if (!token) throw new Error('GITHUB_TOKEN nao configurado')
-                  const repo = String((args as Record<string, unknown>).repo || '')
+                  if (!githubResolverDefaults.token) throw new Error('GITHUB_TOKEN nao configurado')
                   const branch = String((args as Record<string, unknown>).branch || '')
-                  const from = String((args as Record<string, unknown>).from || 'main')
-                  const owner = String((args as Record<string, unknown>).owner || GITHUB_DEFAULT_OWNER)
-                  if (!repo || !branch) throw new Error('repo e branch sao obrigatorios')
+                  const from = String((args as Record<string, unknown>).from || '')
+                  if (!branch) throw new Error('branch e obrigatoria')
 
-                  const refBase = await githubRequest(`/repos/${owner}/${repo}/git/ref/heads/${from}`, { method: 'GET' }, token) as { object?: { sha?: string } }
-                  const shaBase = refBase.object?.sha
-                  if (!shaBase) throw new Error('Nao foi possivel obter a branch base')
+                  const context = await resolveGithubContext({
+                    ...githubResolverDefaults,
+                    requestedRepository: String(
+                      (args as Record<string, unknown>).repository
+                      || (args as Record<string, unknown>).repo
+                      || '',
+                    ),
+                    requestedOwner: String((args as Record<string, unknown>).owner || ''),
+                    requestedBranch: from,
+                  })
 
-                  const data = await githubRequest(`/repos/${owner}/${repo}/git/refs`, {
-                    method: 'POST',
-                    body: JSON.stringify({ ref: `refs/heads/${branch}`, sha: shaBase }),
-                  }, token)
-
-                  return JSON.stringify(data)
+                  const data = await createGithubBranchFromBase(
+                    githubResolverDefaults.token,
+                    context,
+                    branch,
+                    from || context.defaultBranch,
+                  )
+                  githubDiagnosticsStore.recordMany(context.diagnostics)
+                  return JSON.stringify({
+                    owner: context.owner,
+                    repo: context.repo,
+                    branch,
+                    baseBranch: from || context.defaultBranch,
+                    data,
+                    diagnostics: context.diagnostics,
+                  })
                 }
                 case 'github_create_pr': {
-                  const token = apiKeys?.github || process.env.GITHUB_TOKEN || ''
-                  if (!token) throw new Error('GITHUB_TOKEN nao configurado')
-                  const repo = String((args as Record<string, unknown>).repo || '')
+                  if (!githubResolverDefaults.token) throw new Error('GITHUB_TOKEN nao configurado')
                   const title = String((args as Record<string, unknown>).title || '')
                   const body = String((args as Record<string, unknown>).body || '')
                   const head = String((args as Record<string, unknown>).head || '')
-                  const base = String((args as Record<string, unknown>).base || 'main')
-                  const owner = String((args as Record<string, unknown>).owner || GITHUB_DEFAULT_OWNER)
-                  if (!repo || !title || !head) throw new Error('repo, title e head sao obrigatorios')
+                  const base = String((args as Record<string, unknown>).base || '')
+                  if (!title || !head) throw new Error('title e head sao obrigatorios')
 
-                  const data = await githubRequest(`/repos/${owner}/${repo}/pulls`, {
-                    method: 'POST',
-                    body: JSON.stringify({ title, body, head, base }),
-                  }, token)
+                  const context = await resolveGithubContext({
+                    ...githubResolverDefaults,
+                    requestedRepository: String(
+                      (args as Record<string, unknown>).repository
+                      || (args as Record<string, unknown>).repo
+                      || '',
+                    ),
+                    requestedOwner: String((args as Record<string, unknown>).owner || ''),
+                    requestedBranch: base,
+                  })
 
-                  return JSON.stringify(data)
+                  const data = await createGithubPullRequest(
+                    githubResolverDefaults.token,
+                    context,
+                    title,
+                    body,
+                    head,
+                    context.branch,
+                  )
+                  githubDiagnosticsStore.recordMany(context.diagnostics)
+                  return JSON.stringify({
+                    owner: context.owner,
+                    repo: context.repo,
+                    head,
+                    base: context.branch,
+                    data,
+                    diagnostics: context.diagnostics,
+                  })
                 }
                 case 'supabase_query': {
                   const supabase = obterSupabaseAdmin()

@@ -1,4 +1,14 @@
-import { getGitHubToken } from '../integrations/useGitHub'
+import {
+  createBranch,
+  createPullRequest,
+  getDefaultRepository,
+  getToken as getGitHubToken,
+  github_resolve_repository,
+  listAllRepos,
+  listRepoContents,
+  readRepoFile,
+  commitFile,
+} from '../integrations/useGitHub'
 
 let repoCache = null
 
@@ -6,10 +16,7 @@ export function getRepoCache() { return repoCache }
 export function invalidateRepoCache() { repoCache = null }
 
 export function resolveRepo() {
-  try {
-    const i = JSON.parse(localStorage.getItem('morpheus_integrations') || '{}')
-    return (i.github?.repos || '').split(',').map(r => r.trim()).filter(Boolean)[0] || null
-  } catch { return null }
+  return getDefaultRepository()
 }
 
 // Sandbox test runner — runs before any commit
@@ -41,13 +48,7 @@ async function runSandboxTest(repo, filePath, content) {
 
 export async function gitOperatorListAllRepos() {
   try {
-    const t = getGitHubToken()
-    if (!t) return []
-    const r = await fetch('https://api.github.com/user/repos?per_page=100&sort=updated', {
-      headers: { Authorization: 'Bearer ' + t, Accept: 'application/vnd.github+json' }
-    })
-    if (!r.ok) return []
-    const repos = await r.json()
+    const repos = await listAllRepos()
     repoCache = repos
     return repos
   } catch { return [] }
@@ -70,10 +71,9 @@ export async function gitOperatorProtocoloExtincao(repo, pin) {
   const storedPin = localStorage.getItem('morpheus_emergency_pin') || '123456'
   if (pin !== storedPin) throw new Error('PIN incorreto. Protocolo de extincao requer PIN de 6 digitos.')
   const t = getGitHubToken()
-  const i = JSON.parse(localStorage.getItem('morpheus_integrations') || '{}')
-  const u = i.github?.username || 'jadiel054'
   if (!t) throw new Error('Token GitHub nao configurado')
-  const r = await fetch('https://api.github.com/repos/' + u + '/' + repo, {
+  const resolved = await github_resolve_repository(repo)
+  const r = await fetch('https://api.github.com/repos/' + resolved.owner + '/' + resolved.repo, {
     method: 'DELETE',
     headers: { Authorization: 'Bearer ' + t, Accept: 'application/vnd.github+json' },
   })
@@ -83,31 +83,11 @@ export async function gitOperatorProtocoloExtincao(repo, pin) {
 }
 
 export async function gitOperatorReadFile(repo, filePath, owner) {
-  const t = getGitHubToken()
-  const i = JSON.parse(localStorage.getItem('morpheus_integrations') || '{}')
-  const u = owner || i.github?.username || 'jadiel054'
-  if (!t) throw new Error('Token GitHub nao configurado')
-  const r = await fetch('https://api.github.com/repos/' + u + '/' + repo + '/contents/' + filePath, {
-    headers: { Authorization: 'Bearer ' + t, Accept: 'application/vnd.github+json' },
-  })
-  if (!r.ok) throw new Error('Arquivo nao encontrado: ' + r.status)
-  const d = await r.json()
-  return { path: filePath, content: d.content ? atob(d.content) : '', sha: d.sha, size: d.size }
+  return await readRepoFile(repo, filePath, owner)
 }
 
 export async function gitOperatorListFiles(repo, path, owner) {
-  const t = getGitHubToken()
-  const i = JSON.parse(localStorage.getItem('morpheus_integrations') || '{}')
-  const u = owner || i.github?.username || 'jadiel054'
-  if (!t) return []
-  const url = path
-    ? 'https://api.github.com/repos/' + u + '/' + repo + '/contents/' + path
-    : 'https://api.github.com/repos/' + u + '/' + repo + '/contents'
-  const r = await fetch(url, {
-    headers: { Authorization: 'Bearer ' + t, Accept: 'application/vnd.github+json' },
-  })
-  if (!r.ok) return []
-  return await r.json()
+  return await listRepoContents(repo, path, owner)
 }
 
 export async function gitOperatorCommitAndPR(filePath, content, description, repo) {
@@ -121,57 +101,19 @@ export async function gitOperatorCommitAndPR(filePath, content, description, rep
   }
 
   const t = getGitHubToken()
-  const i = JSON.parse(localStorage.getItem('morpheus_integrations') || '{}')
-  const u = i.github?.username || 'jadiel054'
   if (!t) throw new Error('Token GitHub nao configurado')
+  const resolved = await github_resolve_repository(target)
 
   const branchName = 'morpheus/feat-' + Date.now().toString(36)
   const message = description || 'feat: update ' + filePath
 
-  // Get base ref
-  const refRes = await fetch('https://api.github.com/repos/' + u + '/' + target + '/git/ref/heads/main', {
-    headers: { Authorization: 'Bearer ' + t, Accept: 'application/vnd.github+json' },
-  })
-  if (!refRes.ok) throw new Error('Branch main nao encontrada')
-  const refData = await refRes.json()
-
-  // Create branch
-  await fetch('https://api.github.com/repos/' + u + '/' + target + '/git/refs', {
-    method: 'POST',
-    headers: { Authorization: 'Bearer ' + t, 'Content-Type': 'application/json', Accept: 'application/vnd.github+json' },
-    body: JSON.stringify({ ref: 'refs/heads/' + branchName, sha: refData.object.sha }),
-  })
-
-  // Commit file
-  const commitRes = await fetch('https://api.github.com/repos/' + u + '/' + target + '/contents/' + filePath, {
-    method: 'PUT',
-    headers: { Authorization: 'Bearer ' + t, 'Content-Type': 'application/json', Accept: 'application/vnd.github+json' },
-    body: JSON.stringify({
-      message,
-      content: btoa(unescape(encodeURIComponent(content))),
-      branch: branchName,
-    }),
-  })
-  if (!commitRes.ok) throw new Error('Falha ao commitar: ' + commitRes.status)
-  const commitData = await commitRes.json()
-
-  // Create PR
-  const prRes = await fetch('https://api.github.com/repos/' + u + '/' + target + '/pulls', {
-    method: 'POST',
-    headers: { Authorization: 'Bearer ' + t, 'Content-Type': 'application/json', Accept: 'application/vnd.github+json' },
-    body: JSON.stringify({
-      title: message,
-      body: description || '',
-      head: branchName,
-      base: 'main',
-    }),
-  })
-  if (!prRes.ok) throw new Error('Falha ao criar PR: ' + prRes.status)
-  const prData = await prRes.json()
+  await createBranch(resolved.repo, branchName, resolved.default_branch, resolved.owner)
+  const commitData = await commitFile(resolved.repo, filePath, content, message, branchName, resolved.owner)
+  const prData = await createPullRequest(resolved.repo, message, description || '', branchName, resolved.default_branch, resolved.owner)
 
   return {
     success: true,
-    repo: target,
+    repo: resolved.repo,
     branch: branchName,
     commitSha: commitData.commit?.sha?.slice(0, 7) || commitData.sha?.slice(0, 7),
     prUrl: prData.html_url,
