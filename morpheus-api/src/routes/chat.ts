@@ -16,6 +16,7 @@ import {
 } from '../agents/modelRouter.js'
 import { obterSupabaseAdmin, supabaseAdmin } from '../lib/supabaseAdmin.js'
 import { branchProtegida, gerarBranchAutonomo, resumirExecucaoAutonoma } from '../lib/autonomyPolicy.js'
+import { observabilityStore } from '../lib/observabilityStore.js'
 
 const router = Router()
 
@@ -236,11 +237,13 @@ function sleep(ms: number) {
 }
 
 function logStructuredAudit(event: string, payload: Record<string, unknown>) {
-  console.info('[MORPHEUS][AUDIT]', JSON.stringify({
+  const enriched = {
     event,
     timestamp: new Date().toISOString(),
     ...payload,
-  }))
+  }
+  console.info('[MORPHEUS][AUDIT]', JSON.stringify(enriched))
+  observabilityStore.record(event, enriched)
 }
 
 function safeJsonParse<T = Record<string, unknown>>(value: string | undefined, fallback: T): T {
@@ -606,7 +609,7 @@ function normalizarMensagensEntrada(messages: Array<{ role: string, content: str
   })) as ConversationMessage[]
 }
 
-function compactHistory(history: Array<ConversationMessage>) {
+function compactHistoryWithMeta(history: Array<ConversationMessage>) {
   const systemMessages = history
     .filter((item) => item.role === 'system')
     .map(sanitizarMensagemContexto)
@@ -632,7 +635,18 @@ function compactHistory(history: Array<ConversationMessage>) {
     }
   }
 
-  return [...systemMessages, ...recentMessages]
+  const originalNonSystemMessages = history.filter((item) => item.role !== 'system').length
+  const removedMessages = Math.max(0, originalNonSystemMessages - recentMessages.length)
+
+  return {
+    conversation: [...systemMessages, ...recentMessages],
+    compacted: removedMessages > 0,
+    removedMessages,
+  }
+}
+
+function compactHistory(history: Array<ConversationMessage>) {
+  return compactHistoryWithMeta(history).conversation
 }
 
 function selectEffortLevel(userMessage: string) {
@@ -845,6 +859,24 @@ function extrairRetryAfterMs(retryAfter: string | null) {
 
   const diff = dataRetry - Date.now()
   return diff > 0 ? diff : null
+}
+
+function extrairRateLimitHeaders(headers: Headers) {
+  return {
+    limitTokens: toNullableNumberHeader(headers.get('x-ratelimit-limit-tokens')),
+    remainingTokens: toNullableNumberHeader(headers.get('x-ratelimit-remaining-tokens')),
+    limitRequests: toNullableNumberHeader(headers.get('x-ratelimit-limit-requests')),
+    remainingRequests: toNullableNumberHeader(headers.get('x-ratelimit-remaining-requests')),
+    resetTokens: headers.get('x-ratelimit-reset-tokens'),
+    resetRequests: headers.get('x-ratelimit-reset-requests'),
+    retryAfter: headers.get('retry-after'),
+  }
+}
+
+function toNullableNumberHeader(value: string | null) {
+  if (!value) return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
 }
 
 function converterToolsParaAnthropic(tools: typeof TOOL_DEFINITIONS) {
@@ -1134,6 +1166,8 @@ async function chamarModelo(
   while (tentativa < MAX_LLM_ATTEMPTS) {
     tentativa += 1
     try {
+      const callId = crypto.randomUUID()
+      const startedAt = Date.now()
       const headers = criarHeadersProvider(modelo.provider, apiKey)
       const payload = construirPayloadProvider(modelo, conversation, tools)
       const contexto = diagnosticoContexto(conversation)
@@ -1162,9 +1196,11 @@ async function chamarModelo(
         loopCount: contextoExecucao?.loopCount,
         provider: modelo.provider,
         model: modelo.id,
+        callId,
         attempt: tentativa,
         messagesCount: contexto.mensagens,
         estimatedTokens: contexto.tokensEstimados,
+        contextSizeChars: contexto.tamanhoContexto,
         ...tokenBreakdown,
       })
 
@@ -1177,15 +1213,19 @@ async function chamarModelo(
       if (!response.ok) {
         const errorBody = await response.text()
         const mensagemErro = extrairMensagemErroProvider(modelo.provider, response.status, errorBody, modelo.id)
+        const rateLimit = extrairRateLimitHeaders(response.headers)
         logStructuredAudit('model_call_error', {
           requestId: auditState?.requestId,
           conversationId: contextoExecucao?.conversationId,
           loopCount: contextoExecucao?.loopCount,
           provider: modelo.provider,
           model: modelo.id,
+          callId,
           attempt: tentativa,
           status: response.status,
           estimatedTokens: tokenBreakdown.totalTokens,
+          durationMs: Date.now() - startedAt,
+          rateLimit,
           error: mensagemErro,
         })
 
@@ -1206,17 +1246,22 @@ async function chamarModelo(
       }
 
       const data = await response.json()
+      const usage = ((data as Record<string, unknown>)?.usage || {}) as Record<string, unknown>
+      const rateLimit = extrairRateLimitHeaders(response.headers)
       logStructuredAudit('model_call_success', {
         requestId: auditState?.requestId,
         conversationId: contextoExecucao?.conversationId,
         loopCount: contextoExecucao?.loopCount,
         provider: modelo.provider,
         model: modelo.id,
+        callId,
         attempt: tentativa,
         estimatedTokens: tokenBreakdown.totalTokens,
-        usageTotalTokens: Number((data as Record<string, unknown>)?.usage && typeof (data as Record<string, unknown>).usage === 'object'
-          ? ((data as Record<string, unknown>).usage as Record<string, unknown>).total_tokens || 0
-          : 0),
+        durationMs: Date.now() - startedAt,
+        promptTokens: Number(usage.prompt_tokens || 0),
+        completionTokens: Number(usage.completion_tokens || 0),
+        totalTokens: Number(usage.total_tokens || 0),
+        rateLimit,
       })
 
       if (modelo.provider === 'anthropic') {
@@ -1341,6 +1386,10 @@ export type ChatRequestPayload = {
   conversationId?: string
   providerOrder?: string[]
   systemPrompt?: string
+  auditContext?: {
+    memoryCount?: number
+    memoryTokens?: number
+  }
 }
 
 export type ChatExecutionResult = {
@@ -1354,7 +1403,7 @@ export async function processarPipelineChat(
   payload: ChatRequestPayload,
   sendEvent: (type: string, data: Record<string, unknown>) => void = () => {},
 ): Promise<ChatExecutionResult> {
-  const { messages, apiKeys, model, conversationId, providerOrder: providerOrderBody, systemPrompt } = payload
+  const { messages, apiKeys, model, conversationId, providerOrder: providerOrderBody, systemPrompt, auditContext } = payload
   if (!messages?.length) {
     throw new Error('messages required')
   }
@@ -1368,6 +1417,7 @@ export async function processarPipelineChat(
   const modeloFoiSelecionado = Boolean(model && model !== 'auto')
   const resolvedConversationId = conversationId || crypto.randomUUID()
   const requestId = crypto.randomUUID()
+  const pipelineStartedAt = Date.now()
   const planner = new PlannerEngine(resolvedConversationId)
   const reflector = new ReflectorEngine()
   const repeticoesTool = new Map<string, number>()
@@ -1402,6 +1452,8 @@ export async function processarPipelineChat(
     providerOrder,
     messagesCount: mensagensNormalizadas.length,
     estimatedTokens: diagnosticoContexto(conversation).tokensEstimados,
+    memoryCount: Number(auditContext?.memoryCount || 0),
+    memoryTokens: Number(auditContext?.memoryTokens || 0),
   })
 
   try {
@@ -1429,7 +1481,8 @@ export async function processarPipelineChat(
 
     while (loopCount < MAX_LOOPS) {
       loopCount += 1
-      conversation = compactHistory(conversation)
+      const compactacao = compactHistoryWithMeta(conversation)
+      conversation = compactacao.conversation
       const contextoAtual = diagnosticoContexto(conversation)
       logStructuredAudit('loop_start', {
         requestId,
@@ -1437,6 +1490,9 @@ export async function processarPipelineChat(
         loopCount,
         messagesCount: contextoAtual.mensagens,
         estimatedTokens: contextoAtual.tokensEstimados,
+        contextSizeChars: contextoAtual.tamanhoContexto,
+        compacted: compactacao.compacted,
+        removedMessages: compactacao.removedMessages,
         currentModel: modeloUsado,
       })
       sendEvent('plan_update', {
@@ -1505,6 +1561,7 @@ export async function processarPipelineChat(
             requestId,
             conversationId: resolvedConversationId,
             loopCount,
+            toolCallId: toolCall.id,
             toolName: toolCall.function.name,
             toolArguments: compactarTexto(JSON.stringify(args), 800),
             messagesCount: conversation.length,
@@ -1512,282 +1569,297 @@ export async function processarPipelineChat(
           })
           sendEvent('tool_call', { id: toolCall.id, name: toolCall.function.name, arguments: args })
 
-          const resultado = await executarToolComCircuito(toolCall.function.name, async () => {
-            switch (toolCall.function.name) {
-              case 'github_list_repos': {
-                const token = apiKeys?.github || process.env.GITHUB_TOKEN || ''
-                if (!token) throw new Error('GITHUB_TOKEN nao configurado')
-                const data = await githubRequest('/user/repos?per_page=100&sort=updated', { method: 'GET' }, token)
-                return JSON.stringify(data)
-              }
-              case 'github_read_file': {
-                const token = apiKeys?.github || process.env.GITHUB_TOKEN || ''
-                if (!token) throw new Error('GITHUB_TOKEN nao configurado')
-                const repo = String((args as Record<string, unknown>).repo || '')
-                const path = String((args as Record<string, unknown>).path || '')
-                const owner = String((args as Record<string, unknown>).owner || GITHUB_DEFAULT_OWNER)
-                if (!repo || !path) throw new Error('repo e path sao obrigatorios')
-                const data = await githubRequest(`/repos/${owner}/${repo}/contents/${path}`, { method: 'GET' }, token) as { content?: string, sha?: string, size?: number }
-                const content = data.content ? Buffer.from(data.content.replace(/\n/g, ''), 'base64').toString('utf-8') : ''
-                return JSON.stringify({ repo, owner, path, content, sha: data.sha, size: data.size })
-              }
-              case 'github_list_files': {
-                const token = apiKeys?.github || process.env.GITHUB_TOKEN || ''
-                if (!token) throw new Error('GITHUB_TOKEN nao configurado')
-                const repo = String((args as Record<string, unknown>).repo || '')
-                const path = String((args as Record<string, unknown>).path || '')
-                const owner = String((args as Record<string, unknown>).owner || GITHUB_DEFAULT_OWNER)
-                if (!repo) throw new Error('repo e obrigatorio')
-                const sufixo = path ? `/${path}` : ''
-                const data = await githubRequest(`/repos/${owner}/${repo}/contents${sufixo}`, { method: 'GET' }, token)
-                return JSON.stringify(data)
-              }
-              case 'github_commit_file': {
-                const token = apiKeys?.github || process.env.GITHUB_TOKEN || ''
-                if (!token) throw new Error('GITHUB_TOKEN nao configurado')
-
-                const repo = String((args as Record<string, unknown>).repo || '')
-                const path = String((args as Record<string, unknown>).path || '')
-                const content = String((args as Record<string, unknown>).content || '')
-                const message = String((args as Record<string, unknown>).message || '')
-                const branchInformada = String((args as Record<string, unknown>).branch || '')
-                const owner = String((args as Record<string, unknown>).owner || GITHUB_DEFAULT_OWNER)
-
-                if (!repo || !path || !content || !message) {
-                  throw new Error('repo, path, content e message sao obrigatorios')
+          try {
+            const resultado = await executarToolComCircuito(toolCall.function.name, async () => {
+              switch (toolCall.function.name) {
+                case 'github_list_repos': {
+                  const token = apiKeys?.github || process.env.GITHUB_TOKEN || ''
+                  if (!token) throw new Error('GITHUB_TOKEN nao configurado')
+                  const data = await githubRequest('/user/repos?per_page=100&sort=updated', { method: 'GET' }, token)
+                  return JSON.stringify(data)
                 }
-
-                const branchBase = 'main'
-                const usarFluxoSeguro = !branchInformada || branchProtegida(branchInformada)
-                const branch = usarFluxoSeguro ? gerarBranchAutonomo('patch') : branchInformada
-
-                let sha: string | undefined
-                try {
-                  const atual = await githubRequest(`/repos/${owner}/${repo}/contents/${path}`, { method: 'GET' }, token) as { sha?: string }
-                  sha = atual.sha
-                } catch {
-                  sha = undefined
+                case 'github_read_file': {
+                  const token = apiKeys?.github || process.env.GITHUB_TOKEN || ''
+                  if (!token) throw new Error('GITHUB_TOKEN nao configurado')
+                  const repo = String((args as Record<string, unknown>).repo || '')
+                  const path = String((args as Record<string, unknown>).path || '')
+                  const owner = String((args as Record<string, unknown>).owner || GITHUB_DEFAULT_OWNER)
+                  if (!repo || !path) throw new Error('repo e path sao obrigatorios')
+                  const data = await githubRequest(`/repos/${owner}/${repo}/contents/${path}`, { method: 'GET' }, token) as { content?: string, sha?: string, size?: number }
+                  const content = data.content ? Buffer.from(data.content.replace(/\n/g, ''), 'base64').toString('utf-8') : ''
+                  return JSON.stringify({ repo, owner, path, content, sha: data.sha, size: data.size })
                 }
+                case 'github_list_files': {
+                  const token = apiKeys?.github || process.env.GITHUB_TOKEN || ''
+                  if (!token) throw new Error('GITHUB_TOKEN nao configurado')
+                  const repo = String((args as Record<string, unknown>).repo || '')
+                  const path = String((args as Record<string, unknown>).path || '')
+                  const owner = String((args as Record<string, unknown>).owner || GITHUB_DEFAULT_OWNER)
+                  if (!repo) throw new Error('repo e obrigatorio')
+                  const sufixo = path ? `/${path}` : ''
+                  const data = await githubRequest(`/repos/${owner}/${repo}/contents${sufixo}`, { method: 'GET' }, token)
+                  return JSON.stringify(data)
+                }
+                case 'github_commit_file': {
+                  const token = apiKeys?.github || process.env.GITHUB_TOKEN || ''
+                  if (!token) throw new Error('GITHUB_TOKEN nao configurado')
 
-                if (usarFluxoSeguro) {
-                  const refBase = await githubRequest(`/repos/${owner}/${repo}/git/ref/heads/${branchBase}`, { method: 'GET' }, token) as { object?: { sha?: string } }
+                  const repo = String((args as Record<string, unknown>).repo || '')
+                  const path = String((args as Record<string, unknown>).path || '')
+                  const content = String((args as Record<string, unknown>).content || '')
+                  const message = String((args as Record<string, unknown>).message || '')
+                  const branchInformada = String((args as Record<string, unknown>).branch || '')
+                  const owner = String((args as Record<string, unknown>).owner || GITHUB_DEFAULT_OWNER)
+
+                  if (!repo || !path || !content || !message) {
+                    throw new Error('repo, path, content e message sao obrigatorios')
+                  }
+
+                  const branchBase = 'main'
+                  const usarFluxoSeguro = !branchInformada || branchProtegida(branchInformada)
+                  const branch = usarFluxoSeguro ? gerarBranchAutonomo('patch') : branchInformada
+
+                  let sha: string | undefined
+                  try {
+                    const atual = await githubRequest(`/repos/${owner}/${repo}/contents/${path}`, { method: 'GET' }, token) as { sha?: string }
+                    sha = atual.sha
+                  } catch {
+                    sha = undefined
+                  }
+
+                  if (usarFluxoSeguro) {
+                    const refBase = await githubRequest(`/repos/${owner}/${repo}/git/ref/heads/${branchBase}`, { method: 'GET' }, token) as { object?: { sha?: string } }
+                    const shaBase = refBase.object?.sha
+                    if (!shaBase) throw new Error('Nao foi possivel obter a branch base para criar branch autonoma')
+
+                    await githubRequest(`/repos/${owner}/${repo}/git/refs`, {
+                      method: 'POST',
+                      body: JSON.stringify({ ref: `refs/heads/${branch}`, sha: shaBase }),
+                    }, token)
+                  }
+
+                  const body = {
+                    message,
+                    content: Buffer.from(content, 'utf-8').toString('base64'),
+                    branch,
+                    ...(sha ? { sha } : {}),
+                  }
+
+                  const data = await githubRequest(`/repos/${owner}/${repo}/contents/${path}`, {
+                    method: 'PUT',
+                    body: JSON.stringify(body),
+                  }, token) as {
+                    commit?: { sha?: string, html_url?: string }
+                    content?: { html_url?: string }
+                  }
+
+                  let prUrl: string | undefined
+                  let prNumber: number | undefined
+                  if (usarFluxoSeguro) {
+                    const pr = await githubRequest(`/repos/${owner}/${repo}/pulls`, {
+                      method: 'POST',
+                      body: JSON.stringify({
+                        title: message,
+                        body: `Alteração autônoma criada pelo Morpheus para \`${path}\`.\n\nFluxo seguro: branch temporária + PR.`,
+                        head: branch,
+                        base: branchBase,
+                      }),
+                    }, token) as { html_url?: string, number?: number }
+
+                    prUrl = pr.html_url
+                    prNumber = pr.number
+                  }
+
+                  await reflector.refletir({
+                    acao: `commit no arquivo ${path} do repositório ${repo}`,
+                    resultado: prUrl || data.commit?.html_url || data.content?.html_url || `Commit realizado em ${owner}/${repo}`,
+                    sucesso: true,
+                    melhorias: usarFluxoSeguro ? ['Revisar o PR antes do merge em produção'] : [],
+                  })
+
+                  return JSON.stringify({
+                    ...resumirExecucaoAutonoma({
+                      objetivo: `Atualizar ${path}`,
+                      branch,
+                      repo,
+                      prUrl: prUrl || null,
+                    }),
+                    repo,
+                    owner,
+                    path,
+                    branch,
+                    baseBranch: branchBase,
+                    modo: usarFluxoSeguro ? 'branch_temporaria_pr' : 'commit_direto',
+                    commitSha: data.commit?.sha,
+                    commitUrl: data.commit?.html_url || data.content?.html_url,
+                    prUrl,
+                    prNumber,
+                  })
+                }
+                case 'github_create_branch': {
+                  const token = apiKeys?.github || process.env.GITHUB_TOKEN || ''
+                  if (!token) throw new Error('GITHUB_TOKEN nao configurado')
+                  const repo = String((args as Record<string, unknown>).repo || '')
+                  const branch = String((args as Record<string, unknown>).branch || '')
+                  const from = String((args as Record<string, unknown>).from || 'main')
+                  const owner = String((args as Record<string, unknown>).owner || GITHUB_DEFAULT_OWNER)
+                  if (!repo || !branch) throw new Error('repo e branch sao obrigatorios')
+
+                  const refBase = await githubRequest(`/repos/${owner}/${repo}/git/ref/heads/${from}`, { method: 'GET' }, token) as { object?: { sha?: string } }
                   const shaBase = refBase.object?.sha
-                  if (!shaBase) throw new Error('Nao foi possivel obter a branch base para criar branch autonoma')
+                  if (!shaBase) throw new Error('Nao foi possivel obter a branch base')
 
-                  await githubRequest(`/repos/${owner}/${repo}/git/refs`, {
+                  const data = await githubRequest(`/repos/${owner}/${repo}/git/refs`, {
                     method: 'POST',
                     body: JSON.stringify({ ref: `refs/heads/${branch}`, sha: shaBase }),
                   }, token)
-                }
 
-                const body = {
-                  message,
-                  content: Buffer.from(content, 'utf-8').toString('base64'),
-                  branch,
-                  ...(sha ? { sha } : {}),
+                  return JSON.stringify(data)
                 }
+                case 'github_create_pr': {
+                  const token = apiKeys?.github || process.env.GITHUB_TOKEN || ''
+                  if (!token) throw new Error('GITHUB_TOKEN nao configurado')
+                  const repo = String((args as Record<string, unknown>).repo || '')
+                  const title = String((args as Record<string, unknown>).title || '')
+                  const body = String((args as Record<string, unknown>).body || '')
+                  const head = String((args as Record<string, unknown>).head || '')
+                  const base = String((args as Record<string, unknown>).base || 'main')
+                  const owner = String((args as Record<string, unknown>).owner || GITHUB_DEFAULT_OWNER)
+                  if (!repo || !title || !head) throw new Error('repo, title e head sao obrigatorios')
 
-                const data = await githubRequest(`/repos/${owner}/${repo}/contents/${path}`, {
-                  method: 'PUT',
-                  body: JSON.stringify(body),
-                }, token) as {
-                  commit?: { sha?: string, html_url?: string }
-                  content?: { html_url?: string }
-                }
-
-                let prUrl: string | undefined
-                let prNumber: number | undefined
-                if (usarFluxoSeguro) {
-                  const pr = await githubRequest(`/repos/${owner}/${repo}/pulls`, {
+                  const data = await githubRequest(`/repos/${owner}/${repo}/pulls`, {
                     method: 'POST',
-                    body: JSON.stringify({
-                      title: message,
-                      body: `Alteração autônoma criada pelo Morpheus para \`${path}\`.\n\nFluxo seguro: branch temporária + PR.`,
-                      head: branch,
-                      base: branchBase,
-                    }),
-                  }, token) as { html_url?: string, number?: number }
+                    body: JSON.stringify({ title, body, head, base }),
+                  }, token)
 
-                  prUrl = pr.html_url
-                  prNumber = pr.number
+                  return JSON.stringify(data)
                 }
+                case 'supabase_query': {
+                  const supabase = obterSupabaseAdmin()
+                  const table = String((args as Record<string, unknown>).table || '')
+                  const columns = String((args as Record<string, unknown>).columns || '*')
+                  const limit = Number((args as Record<string, unknown>).limit || 50)
+                  const filter = parseJsonStringArgument<Record<string, string | number | boolean>>(
+                    (args as Record<string, unknown>).filter,
+                    'filter',
+                    {},
+                  )
+                  if (!table) throw new Error('table e obrigatoria')
 
-                await reflector.refletir({
-                  acao: `commit no arquivo ${path} do repositório ${repo}`,
-                  resultado: prUrl || data.commit?.html_url || data.content?.html_url || `Commit realizado em ${owner}/${repo}`,
-                  sucesso: true,
-                  melhorias: usarFluxoSeguro ? ['Revisar o PR antes do merge em produção'] : [],
-                })
+                  let query = supabase.from(table).select(columns).limit(Math.min(limit, 1000))
+                  for (const [key, value] of Object.entries(filter)) {
+                    query = query.eq(key, value)
+                  }
 
-                return JSON.stringify({
-                  ...resumirExecucaoAutonoma({
-                    objetivo: `Atualizar ${path}`,
-                    branch,
-                    repo,
-                    prUrl: prUrl || null,
-                  }),
-                  repo,
-                  owner,
-                  path,
-                  branch,
-                  baseBranch: branchBase,
-                  modo: usarFluxoSeguro ? 'branch_temporaria_pr' : 'commit_direto',
-                  commitSha: data.commit?.sha,
-                  commitUrl: data.commit?.html_url || data.content?.html_url,
-                  prUrl,
-                  prNumber,
-                })
-              }
-              case 'github_create_branch': {
-                const token = apiKeys?.github || process.env.GITHUB_TOKEN || ''
-                if (!token) throw new Error('GITHUB_TOKEN nao configurado')
-                const repo = String((args as Record<string, unknown>).repo || '')
-                const branch = String((args as Record<string, unknown>).branch || '')
-                const from = String((args as Record<string, unknown>).from || 'main')
-                const owner = String((args as Record<string, unknown>).owner || GITHUB_DEFAULT_OWNER)
-                if (!repo || !branch) throw new Error('repo e branch sao obrigatorios')
-
-                const refBase = await githubRequest(`/repos/${owner}/${repo}/git/ref/heads/${from}`, { method: 'GET' }, token) as { object?: { sha?: string } }
-                const shaBase = refBase.object?.sha
-                if (!shaBase) throw new Error('Nao foi possivel obter a branch base')
-
-                const data = await githubRequest(`/repos/${owner}/${repo}/git/refs`, {
-                  method: 'POST',
-                  body: JSON.stringify({ ref: `refs/heads/${branch}`, sha: shaBase }),
-                }, token)
-
-                return JSON.stringify(data)
-              }
-              case 'github_create_pr': {
-                const token = apiKeys?.github || process.env.GITHUB_TOKEN || ''
-                if (!token) throw new Error('GITHUB_TOKEN nao configurado')
-                const repo = String((args as Record<string, unknown>).repo || '')
-                const title = String((args as Record<string, unknown>).title || '')
-                const body = String((args as Record<string, unknown>).body || '')
-                const head = String((args as Record<string, unknown>).head || '')
-                const base = String((args as Record<string, unknown>).base || 'main')
-                const owner = String((args as Record<string, unknown>).owner || GITHUB_DEFAULT_OWNER)
-                if (!repo || !title || !head) throw new Error('repo, title e head sao obrigatorios')
-
-                const data = await githubRequest(`/repos/${owner}/${repo}/pulls`, {
-                  method: 'POST',
-                  body: JSON.stringify({ title, body, head, base }),
-                }, token)
-
-                return JSON.stringify(data)
-              }
-              case 'supabase_query': {
-                const supabase = obterSupabaseAdmin()
-                const table = String((args as Record<string, unknown>).table || '')
-                const columns = String((args as Record<string, unknown>).columns || '*')
-                const limit = Number((args as Record<string, unknown>).limit || 50)
-                const filter = parseJsonStringArgument<Record<string, string | number | boolean>>(
-                  (args as Record<string, unknown>).filter,
-                  'filter',
-                  {},
-                )
-                if (!table) throw new Error('table e obrigatoria')
-
-                let query = supabase.from(table).select(columns).limit(Math.min(limit, 1000))
-                for (const [key, value] of Object.entries(filter)) {
-                  query = query.eq(key, value)
+                  const { data, error } = await query
+                  if (error) throw new Error(error.message)
+                  return JSON.stringify(data || [])
                 }
+                case 'supabase_upsert': {
+                  const supabase = obterSupabaseAdmin()
+                  const table = String((args as Record<string, unknown>).table || '')
+                  const data = parseJsonStringArgument<Record<string, unknown> | Array<Record<string, unknown>>>(
+                    (args as Record<string, unknown>).data,
+                    'data',
+                  )
+                  if (!table || !data) throw new Error('table e data sao obrigatorios')
+                  const payload = Array.isArray(data) ? data : [data]
+                  const { data: upserted, error } = await supabase.from(table).upsert(payload).select()
+                  if (error) throw new Error(error.message)
+                  return JSON.stringify(upserted || [])
+                }
+                case 'web_search': {
+                  const query = String((args as Record<string, unknown>).query || '')
+                  const limit = Number((args as Record<string, unknown>).limit || 5)
+                  if (query.length < 3) throw new Error('query deve ter ao menos 3 caracteres')
+                  const response = await fetch(`https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json`)
+                  const data = await response.json() as { RelatedTopics?: Array<{ Text?: string, FirstURL?: string }> }
+                  const resultados = (data.RelatedTopics || []).slice(0, limit).map((item) => ({
+                    title: item.Text?.split(' - ')[0] || item.Text || '',
+                    snippet: item.Text || '',
+                    url: item.FirstURL || '',
+                  }))
+                  return JSON.stringify(resultados)
+                }
+                case 'create_plan': {
+                  const objetivo = String((args as Record<string, unknown>).objetivo || '')
+                  const etapas = Array.isArray((args as Record<string, unknown>).etapas) ? (args as Record<string, unknown>).etapas as string[] : []
+                  const criterioSucesso = String((args as Record<string, unknown>).criterio_sucesso || '')
+                  const plano = await planner.criarPlano({ objetivo, etapas, criterioSucesso })
+                  return JSON.stringify(plano)
+                }
+                case 'update_plan': {
+                  const idEtapa = Number((args as Record<string, unknown>).id_etapa)
+                  const status = String((args as Record<string, unknown>).status || '') as 'em_progresso' | 'concluida' | 'falhou' | 'ignorada'
+                  const resultado = String((args as Record<string, unknown>).resultado || '')
+                  const plano = await planner.atualizarEtapa(idEtapa, { status, resultado })
+                  return JSON.stringify(plano)
+                }
+                case 'get_plan': {
+                  return JSON.stringify(planner.planoAtual || null)
+                }
+                case 'self_reflect': {
+                  const reflexao = await reflector.refletir({
+                    acao: String((args as Record<string, unknown>).acao || ''),
+                    resultado: String((args as Record<string, unknown>).resultado || ''),
+                    sucesso: Boolean((args as Record<string, unknown>).sucesso),
+                    melhorias: Array.isArray((args as Record<string, unknown>).melhorias) ? (args as Record<string, unknown>).melhorias as string[] : [],
+                    licao: String((args as Record<string, unknown>).licao || ''),
+                  })
+                  return JSON.stringify(reflexao)
+                }
+                default:
+                  throw new Error(`Tool nao implementada: ${toolCall.function.name}`)
+              }
+            })
+            const toolResultSize = String(resultado || '').length
+            const resultTokens = estimarTokensTexto(String(resultado || ''))
+            const executionMs = Date.now() - inicioExecucao
+            auditState.totalToolCalls += 1
+            auditState.executedTools.push({
+              loopCount,
+              toolName: toolCall.function.name,
+              toolArguments: compactarTexto(JSON.stringify(args), 800),
+              executionMs,
+              toolResultSize,
+              resultTokens,
+            })
 
-                const { data, error } = await query
-                if (error) throw new Error(error.message)
-                return JSON.stringify(data || [])
-              }
-              case 'supabase_upsert': {
-                const supabase = obterSupabaseAdmin()
-                const table = String((args as Record<string, unknown>).table || '')
-                const data = parseJsonStringArgument<Record<string, unknown> | Array<Record<string, unknown>>>(
-                  (args as Record<string, unknown>).data,
-                  'data',
-                )
-                if (!table || !data) throw new Error('table e data sao obrigatorios')
-                const payload = Array.isArray(data) ? data : [data]
-                const { data: upserted, error } = await supabase.from(table).upsert(payload).select()
-                if (error) throw new Error(error.message)
-                return JSON.stringify(upserted || [])
-              }
-              case 'web_search': {
-                const query = String((args as Record<string, unknown>).query || '')
-                const limit = Number((args as Record<string, unknown>).limit || 5)
-                if (query.length < 3) throw new Error('query deve ter ao menos 3 caracteres')
-                const response = await fetch(`https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json`)
-                const data = await response.json() as { RelatedTopics?: Array<{ Text?: string, FirstURL?: string }> }
-                const resultados = (data.RelatedTopics || []).slice(0, limit).map((item) => ({
-                  title: item.Text?.split(' - ')[0] || item.Text || '',
-                  snippet: item.Text || '',
-                  url: item.FirstURL || '',
-                }))
-                return JSON.stringify(resultados)
-              }
-              case 'create_plan': {
-                const objetivo = String((args as Record<string, unknown>).objetivo || '')
-                const etapas = Array.isArray((args as Record<string, unknown>).etapas) ? (args as Record<string, unknown>).etapas as string[] : []
-                const criterioSucesso = String((args as Record<string, unknown>).criterio_sucesso || '')
-                const plano = await planner.criarPlano({ objetivo, etapas, criterioSucesso })
-                return JSON.stringify(plano)
-              }
-              case 'update_plan': {
-                const idEtapa = Number((args as Record<string, unknown>).id_etapa)
-                const status = String((args as Record<string, unknown>).status || '') as 'em_progresso' | 'concluida' | 'falhou' | 'ignorada'
-                const resultado = String((args as Record<string, unknown>).resultado || '')
-                const plano = await planner.atualizarEtapa(idEtapa, { status, resultado })
-                return JSON.stringify(plano)
-              }
-              case 'get_plan': {
-                return JSON.stringify(planner.planoAtual || null)
-              }
-              case 'self_reflect': {
-                const reflexao = await reflector.refletir({
-                  acao: String((args as Record<string, unknown>).acao || ''),
-                  resultado: String((args as Record<string, unknown>).resultado || ''),
-                  sucesso: Boolean((args as Record<string, unknown>).sucesso),
-                  melhorias: Array.isArray((args as Record<string, unknown>).melhorias) ? (args as Record<string, unknown>).melhorias as string[] : [],
-                  licao: String((args as Record<string, unknown>).licao || ''),
-                })
-                return JSON.stringify(reflexao)
-              }
-              default:
-                throw new Error(`Tool nao implementada: ${toolCall.function.name}`)
-            }
-          })
-          const toolResultSize = String(resultado || '').length
-          const resultTokens = estimarTokensTexto(String(resultado || ''))
-          const executionMs = Date.now() - inicioExecucao
-          auditState.totalToolCalls += 1
-          auditState.executedTools.push({
-            loopCount,
-            toolName: toolCall.function.name,
-            toolArguments: compactarTexto(JSON.stringify(args), 800),
-            executionMs,
-            toolResultSize,
-            resultTokens,
-          })
+            sendEvent('tool_result', { id: toolCall.id, result: resultado.slice(0, 2000) })
+            logStructuredAudit('tool_call_success', {
+              requestId,
+              conversationId: resolvedConversationId,
+              loopCount,
+              toolCallId: toolCall.id,
+              toolName: toolCall.function.name,
+              toolArguments: compactarTexto(JSON.stringify(args), 800),
+              toolResultSize,
+              resultTokens,
+              executionMs,
+            })
+            await registrarLogAcao({
+              tipo: 'tool_call',
+              ferramenta: toolCall.function.name,
+              status: 'success',
+              conversation_id: planner.conversationId,
+              detalhes: safeJsonParse(resultado, { result: resultado }),
+              criado_em: new Date().toISOString(),
+            })
 
-          sendEvent('tool_result', { id: toolCall.id, result: resultado.slice(0, 2000) })
-          logStructuredAudit('tool_call_success', {
-            requestId,
-            conversationId: resolvedConversationId,
-            loopCount,
-            toolName: toolCall.function.name,
-            toolArguments: compactarTexto(JSON.stringify(args), 800),
-            toolResultSize,
-            resultTokens,
-            executionMs,
-          })
-          await registrarLogAcao({
-            tipo: 'tool_call',
-            ferramenta: toolCall.function.name,
-            status: 'success',
-            conversation_id: planner.conversationId,
-            detalhes: safeJsonParse(resultado, { result: resultado }),
-            criado_em: new Date().toISOString(),
-          })
-
-          return { toolCall, resultado }
+            return { toolCall, resultado }
+          } catch (error) {
+            logStructuredAudit('tool_call_error', {
+              requestId,
+              conversationId: resolvedConversationId,
+              loopCount,
+              toolCallId: toolCall.id,
+              toolName: toolCall.function.name,
+              toolArguments: compactarTexto(JSON.stringify(args), 800),
+              executionMs: Date.now() - inicioExecucao,
+              error: serializarErro(error),
+            })
+            throw error
+          }
         }
 
         const resultadosLeitura = await Promise.all(blocosLeitura.map(executarTool))
@@ -1853,6 +1925,7 @@ export async function processarPipelineChat(
       groqCalls: auditState.groqCalls,
       totalToolCalls: auditState.totalToolCalls,
       cumulativeEstimatedTokens: auditState.cumulativeEstimatedTokens,
+      totalExecutionMs: Date.now() - pipelineStartedAt,
       toolsExecuted: auditState.executedTools,
       loopTransitions: auditState.loopTransitions,
       modelUsed: modeloUsado,
@@ -1878,6 +1951,7 @@ export async function processarPipelineChat(
       groqCalls: auditState.groqCalls,
       totalToolCalls: auditState.totalToolCalls,
       cumulativeEstimatedTokens: auditState.cumulativeEstimatedTokens,
+      totalExecutionMs: Date.now() - pipelineStartedAt,
       toolsExecuted: auditState.executedTools,
       loopTransitions: auditState.loopTransitions,
       error: serializarErro(error),

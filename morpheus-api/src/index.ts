@@ -9,6 +9,7 @@ import telegramRouter, { setupTelegramIntegration } from './routes/telegram.js'
 import emailRouter from './routes/email.js'
 import healthRouter from './routes/health.js'
 import credentialsRouter from './routes/credentials.js'
+import observabilityRouter from './routes/observability.js'
 import { authMiddleware } from './middleware/auth.js'
 import { rateLimitMiddleware } from './middleware/rateLimit.js'
 
@@ -27,6 +28,7 @@ app.use('/api/credentials', authMiddleware, credentialsRouter)
 app.use('/api/github', authMiddleware, githubRouter)
 app.use('/api/memory', authMiddleware, memoryRouter)
 app.use('/api/deploy', authMiddleware, deployRouter)
+app.use('/api/observability', authMiddleware, observabilityRouter)
 app.use('/api/telegram', telegramRouter)
 app.use('/api/email', authMiddleware, emailRouter)
 

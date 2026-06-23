@@ -463,7 +463,7 @@ export default function Morpheus() {
   const closeTab = useCallback((id) => setTabs(prev => { if (prev.length <= 1) return prev; const n = prev.filter(t => t.id !== id); if (activeTabId === id) setActiveTabId(n[n.length-1].id); return n }), [activeTabId])
   const updateActiveTab = useCallback((updater) => setTabs(prev => prev.map(t => t.id === activeTabId ? updater(t) : t)), [activeTabId])
 
-  const callAI = useCallback(async (systemPrompt, userText, history = []) => {
+  const callAI = useCallback(async (systemPrompt, userText, history = [], auditContext = {}) => {
     const storedSettings = (() => { try { return JSON.parse(localStorage.getItem('morpheus_settings') || '{}') } catch { return {} } })()
     const integrations = (() => { try { return JSON.parse(localStorage.getItem('morpheus_integrations') || '{}') } catch { return {} } })()
     const selectedModel = settings.ai_model || storedSettings.ai_model || 'auto'
@@ -516,6 +516,7 @@ export default function Morpheus() {
             conversationId: activeTabId,
             providerOrder,
             systemPrompt,
+            auditContext,
           }),
         })
 
@@ -623,7 +624,10 @@ export default function Morpheus() {
       const content = buildContentWithAttachments(fullPrompt, files)
       const history = activeTab.messages.slice(-6).map(m => ({ role: m.role, content: m.content }))
       addStep('Chamando LLM...')
-      const result = await callAI(systemPrompt, content, history)
+      const result = await callAI(systemPrompt, content, history, {
+        memoryCount: updatedMemory?.facts?.length || 0,
+        memoryTokens: Math.ceil((memoryPrompt || '').length / 4),
+      })
       completeLastStep('Modelo: ' + (result.model || 'unknown'))
       const assistantMsg = { role: 'assistant', content: result.content, timestamp: Date.now(), model: result.model }
       updateActiveTab(tab => { const updated = { ...tab, messages: [...tab.messages, assistantMsg] }; saveConversation(updated); return updated })
