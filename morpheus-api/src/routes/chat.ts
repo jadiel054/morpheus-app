@@ -42,6 +42,33 @@ type ConversationMessage = {
   name?: string
 }
 
+type AuditToolExecution = {
+  loopCount: number
+  toolName: string
+  toolArguments: string
+  executionMs: number
+  toolResultSize: number
+  resultTokens: number
+}
+
+type AuditLoopTransition = {
+  fromLoop: number
+  toLoop: number
+  reason: string
+  tools?: string[]
+}
+
+type AuditState = {
+  requestId: string
+  conversationId: string
+  totalModelCalls: number
+  groqCalls: number
+  totalToolCalls: number
+  cumulativeEstimatedTokens: number
+  executedTools: AuditToolExecution[]
+  loopTransitions: AuditLoopTransition[]
+}
+
 const READ_ONLY_TOOLS = [
   'github_list_repos',
   'github_read_file',
@@ -206,6 +233,14 @@ const TOOL_DEFINITIONS = [
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function logStructuredAudit(event: string, payload: Record<string, unknown>) {
+  console.info('[MORPHEUS][AUDIT]', JSON.stringify({
+    event,
+    timestamp: new Date().toISOString(),
+    ...payload,
+  }))
 }
 
 function safeJsonParse<T = Record<string, unknown>>(value: string | undefined, fallback: T): T {
@@ -429,6 +464,53 @@ function diagnosticoContexto(conversation: Array<ConversationMessage>) {
     mensagens,
     tamanhoContexto,
     tokensEstimados: conversation.reduce((total, message) => total + estimarTokensMensagem(message), 0),
+  }
+}
+
+function calcularBreakdownTokens(
+  conversation: Array<ConversationMessage>,
+  tools: typeof TOOL_DEFINITIONS,
+) {
+  let systemPromptTokens = 0
+  let historyTokens = 0
+  let toolResultTokens = 0
+  let userTokens = 0
+
+  let ultimoIndiceUser = -1
+  for (let index = conversation.length - 1; index >= 0; index -= 1) {
+    if (conversation[index]?.role === 'user') {
+      ultimoIndiceUser = index
+      break
+    }
+  }
+
+  conversation.forEach((message, index) => {
+    const custo = estimarTokensMensagem(message)
+    if (message.role === 'system') {
+      systemPromptTokens += custo
+      return
+    }
+    if (message.role === 'tool') {
+      toolResultTokens += custo
+      return
+    }
+    if (message.role === 'user' && index === ultimoIndiceUser) {
+      userTokens += custo
+      return
+    }
+    historyTokens += custo
+  })
+
+  const toolSchemaTokens = estimarTokensTexto(JSON.stringify(tools))
+  const totalTokens = systemPromptTokens + historyTokens + toolResultTokens + userTokens + toolSchemaTokens
+
+  return {
+    systemPromptTokens,
+    historyTokens,
+    toolResultTokens,
+    userTokens,
+    toolSchemaTokens,
+    totalTokens,
   }
 }
 
@@ -1040,6 +1122,8 @@ async function chamarModelo(
   tools: typeof TOOL_DEFINITIONS,
   apiKeys: Record<string, string> | undefined,
   sendEvent: (type: string, data: Record<string, unknown>) => void = () => {},
+  auditState?: AuditState,
+  contextoExecucao?: { loopCount: number, conversationId: string },
 ) {
   const apiKey = obterApiKey(modelo.provider, apiKeys)
   if (!apiKey) {
@@ -1053,6 +1137,7 @@ async function chamarModelo(
       const headers = criarHeadersProvider(modelo.provider, apiKey)
       const payload = construirPayloadProvider(modelo, conversation, tools)
       const contexto = diagnosticoContexto(conversation)
+      const tokenBreakdown = calcularBreakdownTokens(conversation, tools)
       const diagnostico = {
         provider: modelo.provider,
         modelo: modelo.id,
@@ -1062,9 +1147,25 @@ async function chamarModelo(
         apiKeyPresente: Boolean(apiKey),
         authorizationHeaderPresente: Boolean(headers.Authorization || headers['x-api-key']),
       }
+      if (auditState) {
+        auditState.totalModelCalls += 1
+        auditState.cumulativeEstimatedTokens += tokenBreakdown.totalTokens
+        if (modelo.provider === 'groq') auditState.groqCalls += 1
+      }
       console.info('[MORPHEUS][llm_diagnostic]', diagnostico)
       sendEvent('thinking', {
         content: `Diagnóstico temporário: provider=${modelo.provider}, modelo=${modelo.id}, mensagens=${contexto.mensagens}, tokens≈${contexto.tokensEstimados}, contexto=${contexto.tamanhoContexto} chars, apiKey=${diagnostico.apiKeyPresente ? 'ok' : 'ausente'}, authHeader=${diagnostico.authorizationHeaderPresente ? 'ok' : 'ausente'}`,
+      })
+      logStructuredAudit('model_call_start', {
+        requestId: auditState?.requestId,
+        conversationId: contextoExecucao?.conversationId,
+        loopCount: contextoExecucao?.loopCount,
+        provider: modelo.provider,
+        model: modelo.id,
+        attempt: tentativa,
+        messagesCount: contexto.mensagens,
+        estimatedTokens: contexto.tokensEstimados,
+        ...tokenBreakdown,
       })
 
       const response = await fetch(obterUrlProvider(modelo.provider, modelo.id, apiKey), {
@@ -1076,6 +1177,17 @@ async function chamarModelo(
       if (!response.ok) {
         const errorBody = await response.text()
         const mensagemErro = extrairMensagemErroProvider(modelo.provider, response.status, errorBody, modelo.id)
+        logStructuredAudit('model_call_error', {
+          requestId: auditState?.requestId,
+          conversationId: contextoExecucao?.conversationId,
+          loopCount: contextoExecucao?.loopCount,
+          provider: modelo.provider,
+          model: modelo.id,
+          attempt: tentativa,
+          status: response.status,
+          estimatedTokens: tokenBreakdown.totalTokens,
+          error: mensagemErro,
+        })
 
         if (response.status === 429) {
           const retryAfterMs = extrairRetryAfterMs(response.headers.get('retry-after'))
@@ -1094,6 +1206,18 @@ async function chamarModelo(
       }
 
       const data = await response.json()
+      logStructuredAudit('model_call_success', {
+        requestId: auditState?.requestId,
+        conversationId: contextoExecucao?.conversationId,
+        loopCount: contextoExecucao?.loopCount,
+        provider: modelo.provider,
+        model: modelo.id,
+        attempt: tentativa,
+        estimatedTokens: tokenBreakdown.totalTokens,
+        usageTotalTokens: Number((data as Record<string, unknown>)?.usage && typeof (data as Record<string, unknown>).usage === 'object'
+          ? ((data as Record<string, unknown>).usage as Record<string, unknown>).total_tokens || 0
+          : 0),
+      })
 
       if (modelo.provider === 'anthropic') {
         return extrairRespostaAnthropic(data as Record<string, unknown>)
@@ -1121,20 +1245,45 @@ async function chamarComFallback(
   sendEvent: (type: string, data: Record<string, unknown>) => void,
   providerOrder: string[],
   usarSomenteModeloInicial = false,
+  auditState?: AuditState,
+  contextoExecucao?: { loopCount: number, conversationId: string },
 ) {
   const cadeia = usarSomenteModeloInicial
     ? [modeloInicial]
     : [modeloInicial, ...cadeiaDeFallback(modeloInicial.id, providerOrder)]
 
   let ultimoErro: unknown = null
+  logStructuredAudit('fallback_chain_start', {
+    requestId: auditState?.requestId,
+    conversationId: contextoExecucao?.conversationId,
+    loopCount: contextoExecucao?.loopCount,
+    initialModel: modeloInicial.id,
+    providerOrder,
+    candidateModels: cadeia.map((modelo) => modelo.id),
+  })
   for (const modelo of cadeia) {
     try {
       sendEvent('thinking', { content: `Modelo selecionado: ${modelo.id}` })
-      const data = await chamarModelo(modelo, conversation, tools, apiKeys, sendEvent)
+      logStructuredAudit('fallback_attempt', {
+        requestId: auditState?.requestId,
+        conversationId: contextoExecucao?.conversationId,
+        loopCount: contextoExecucao?.loopCount,
+        provider: modelo.provider,
+        model: modelo.id,
+      })
+      const data = await chamarModelo(modelo, conversation, tools, apiKeys, sendEvent, auditState, contextoExecucao)
       return { data, modelo }
     } catch (error) {
       ultimoErro = error
       sendEvent('thinking', { content: `Modelo ${modelo.id} falhou, tentando fallback...` })
+      logStructuredAudit('fallback_attempt_failed', {
+        requestId: auditState?.requestId,
+        conversationId: contextoExecucao?.conversationId,
+        loopCount: contextoExecucao?.loopCount,
+        provider: modelo.provider,
+        model: modelo.id,
+        error: serializarErro(error),
+      })
     }
   }
 
@@ -1217,9 +1366,21 @@ export async function processarPipelineChat(
   const providerOrder = extrairProviderOrderDisponivel(apiKeys, providerOrderBody)
   const modeloInicial = obterModeloInicial(model, tipoTarefa, providerOrder)
   const modeloFoiSelecionado = Boolean(model && model !== 'auto')
-  const planner = new PlannerEngine(conversationId || crypto.randomUUID())
+  const resolvedConversationId = conversationId || crypto.randomUUID()
+  const requestId = crypto.randomUUID()
+  const planner = new PlannerEngine(resolvedConversationId)
   const reflector = new ReflectorEngine()
   const repeticoesTool = new Map<string, number>()
+  const auditState: AuditState = {
+    requestId,
+    conversationId: resolvedConversationId,
+    totalModelCalls: 0,
+    groqCalls: 0,
+    totalToolCalls: 0,
+    cumulativeEstimatedTokens: 0,
+    executedTools: [],
+    loopTransitions: [],
+  }
 
   const contextoSistema = compactarTexto([
     montarPrompt('planejamento', `Tipo de tarefa: ${tipoTarefa}\nSe o modelo atual não suportar tools ou visão para concluir a tarefa, explique isso claramente e sugira um modelo compatível.`),
@@ -1233,6 +1394,15 @@ export async function processarPipelineChat(
   let totalTokensUsed = 0
   let finalContent = ''
   let modeloUsado = modeloInicial?.id || 'none'
+  logStructuredAudit('pipeline_start', {
+    requestId,
+    conversationId: resolvedConversationId,
+    modelRequested: model || 'auto',
+    initialModel: modeloInicial?.id || null,
+    providerOrder,
+    messagesCount: mensagensNormalizadas.length,
+    estimatedTokens: diagnosticoContexto(conversation).tokensEstimados,
+  })
 
   try {
     if (!modeloInicial) {
@@ -1261,6 +1431,14 @@ export async function processarPipelineChat(
       loopCount += 1
       conversation = compactHistory(conversation)
       const contextoAtual = diagnosticoContexto(conversation)
+      logStructuredAudit('loop_start', {
+        requestId,
+        conversationId: resolvedConversationId,
+        loopCount,
+        messagesCount: contextoAtual.mensagens,
+        estimatedTokens: contextoAtual.tokensEstimados,
+        currentModel: modeloUsado,
+      })
       sendEvent('plan_update', {
         step: loopCount === 1 ? 'analyze' : loopCount === 2 ? 'plan' : loopCount === 3 ? 'execute' : 'synthesize',
         status: 'running',
@@ -1269,7 +1447,17 @@ export async function processarPipelineChat(
         content: `Contexto preparado: ${contextoAtual.mensagens} mensagens, ${contextoAtual.tamanhoContexto} chars, tokens≈${contextoAtual.tokensEstimados}`,
       })
 
-      const llmResult = await chamarComFallback(modeloInicial, conversation, TOOL_DEFINITIONS, apiKeys, sendEvent, providerOrder, modeloFoiSelecionado)
+      const llmResult = await chamarComFallback(
+        modeloInicial,
+        conversation,
+        TOOL_DEFINITIONS,
+        apiKeys,
+        sendEvent,
+        providerOrder,
+        modeloFoiSelecionado,
+        auditState,
+        { loopCount, conversationId: resolvedConversationId },
+      )
       const llmData = llmResult.data
       modeloUsado = llmResult.modelo.id
 
@@ -1287,10 +1475,25 @@ export async function processarPipelineChat(
 
       const toolCalls = choice.message.tool_calls as Array<{ id: string, function: { name: string, arguments: string } }> | undefined
       if (choice.finish_reason === 'tool_calls' && toolCalls?.length) {
+        auditState.loopTransitions.push({
+          fromLoop: loopCount,
+          toLoop: loopCount + 1,
+          reason: 'tool_call_detectada',
+          tools: toolCalls.map((toolCall) => toolCall.function.name),
+        })
+        logStructuredAudit('loop_transition', {
+          requestId,
+          conversationId: resolvedConversationId,
+          fromLoop: loopCount,
+          toLoop: loopCount + 1,
+          reason: 'tool_call_detectada',
+          tools: toolCalls.map((toolCall) => toolCall.function.name),
+        })
         const blocosLeitura = toolCalls.filter((toolCall) => READ_ONLY_TOOLS.includes(toolCall.function.name))
         const blocosEscrita = toolCalls.filter((toolCall) => !READ_ONLY_TOOLS.includes(toolCall.function.name))
 
         const executarTool = async (toolCall: { id: string, function: { name: string, arguments: string } }) => {
+          const inicioExecucao = Date.now()
           const args = safeJsonParse(toolCall.function.arguments, {})
           const assinaturaTool = `${toolCall.function.name}:${JSON.stringify(args)}`
           const repeticoes = (repeticoesTool.get(assinaturaTool) || 0) + 1
@@ -1298,6 +1501,15 @@ export async function processarPipelineChat(
           if (repeticoes > MAX_REPEATED_TOOL_CALLS) {
             throw new Error(`Loop interno detectado: tool ${toolCall.function.name} repetida ${repeticoes}x com os mesmos argumentos`)
           }
+          logStructuredAudit('tool_call_start', {
+            requestId,
+            conversationId: resolvedConversationId,
+            loopCount,
+            toolName: toolCall.function.name,
+            toolArguments: compactarTexto(JSON.stringify(args), 800),
+            messagesCount: conversation.length,
+            estimatedTokens: diagnosticoContexto(conversation).tokensEstimados,
+          })
           sendEvent('tool_call', { id: toolCall.id, name: toolCall.function.name, arguments: args })
 
           const resultado = await executarToolComCircuito(toolCall.function.name, async () => {
@@ -1542,8 +1754,30 @@ export async function processarPipelineChat(
                 throw new Error(`Tool nao implementada: ${toolCall.function.name}`)
             }
           })
+          const toolResultSize = String(resultado || '').length
+          const resultTokens = estimarTokensTexto(String(resultado || ''))
+          const executionMs = Date.now() - inicioExecucao
+          auditState.totalToolCalls += 1
+          auditState.executedTools.push({
+            loopCount,
+            toolName: toolCall.function.name,
+            toolArguments: compactarTexto(JSON.stringify(args), 800),
+            executionMs,
+            toolResultSize,
+            resultTokens,
+          })
 
           sendEvent('tool_result', { id: toolCall.id, result: resultado.slice(0, 2000) })
+          logStructuredAudit('tool_call_success', {
+            requestId,
+            conversationId: resolvedConversationId,
+            loopCount,
+            toolName: toolCall.function.name,
+            toolArguments: compactarTexto(JSON.stringify(args), 800),
+            toolResultSize,
+            resultTokens,
+            executionMs,
+          })
           await registrarLogAcao({
             tipo: 'tool_call',
             ferramenta: toolCall.function.name,
@@ -1591,6 +1825,13 @@ export async function processarPipelineChat(
       if (!llmResult.modelo.suportaTools && respostaPareceSimularTool(finalContent)) {
         throw new Error(montarMensagemLimitacao('tools', llmResult.modelo, ultimaMensagem))
       }
+      logStructuredAudit('loop_completed_without_tool', {
+        requestId,
+        conversationId: resolvedConversationId,
+        loopCount,
+        finalModel: llmResult.modelo.id,
+        finalContentSize: finalContent.length,
+      })
       break
     }
 
@@ -1604,6 +1845,19 @@ export async function processarPipelineChat(
 
     sendEvent('content', { content: finalContent, model: modeloUsado, loops: loopCount, tokensUsed: totalTokensUsed })
     sendEvent('plan_update', { step: 'synthesize', status: 'done' })
+    logStructuredAudit('pipeline_summary', {
+      requestId,
+      conversationId: resolvedConversationId,
+      loops: loopCount,
+      totalModelCalls: auditState.totalModelCalls,
+      groqCalls: auditState.groqCalls,
+      totalToolCalls: auditState.totalToolCalls,
+      cumulativeEstimatedTokens: auditState.cumulativeEstimatedTokens,
+      toolsExecuted: auditState.executedTools,
+      loopTransitions: auditState.loopTransitions,
+      modelUsed: modeloUsado,
+      usageTokensReportedByProvider: totalTokensUsed,
+    })
     return {
       content: finalContent,
       model: modeloUsado,
@@ -1616,6 +1870,18 @@ export async function processarPipelineChat(
     }
 
     sendEvent('error', { message: serializarErro(error) })
+    logStructuredAudit('pipeline_error', {
+      requestId,
+      conversationId: resolvedConversationId,
+      loops: loopCount,
+      totalModelCalls: auditState.totalModelCalls,
+      groqCalls: auditState.groqCalls,
+      totalToolCalls: auditState.totalToolCalls,
+      cumulativeEstimatedTokens: auditState.cumulativeEstimatedTokens,
+      toolsExecuted: auditState.executedTools,
+      loopTransitions: auditState.loopTransitions,
+      error: serializarErro(error),
+    })
     throw error
   }
 }
