@@ -12,6 +12,17 @@ function normalizeApiKey(value: unknown) {
   return String(value || '').trim()
 }
 
+function normalizarProviderEntrada(provider: unknown) {
+  const valor = String(provider || '').trim().toLowerCase()
+  if (!valor) return ''
+  if (['openrouter', 'deepseek', 'qwen', 'glm', 'openrouter_deepseek', 'openrouter_qwen', 'openrouter_glm'].includes(valor)) {
+    return 'openrouter'
+  }
+  if (['claude', 'anthropic'].includes(valor)) return 'anthropic'
+  if (['gemini', 'google'].includes(valor)) return 'google'
+  return valor
+}
+
 function obterKeyDoAmbiente(provider: string) {
   if (provider === 'groq') return normalizeApiKey(process.env.GROQ_API_KEY)
   if (provider === 'cerebras') return normalizeApiKey(process.env.CEREBRAS_API_KEY)
@@ -98,7 +109,7 @@ function obterConfigProvider(provider: string, key: string): ProviderConfig | nu
 }
 
 router.post('/test', async (req: Request, res: Response) => {
-  const provider = String(req.body?.provider || '').trim()
+  const provider = normalizarProviderEntrada(req.body?.provider)
   const keyInformada = normalizeApiKey(req.body?.key)
   const keyDoAmbiente = provider ? obterKeyDoAmbiente(provider) : ''
   const key = keyInformada || keyDoAmbiente

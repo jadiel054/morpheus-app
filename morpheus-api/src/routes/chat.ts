@@ -23,6 +23,11 @@ const MAX_LOOPS = 15
 const RETRY_DELAY = 1000
 const MAX_LLM_ATTEMPTS = 3
 const MAX_BUDGET_TOKENS = 100_000
+const MAX_CONTEXT_MESSAGES = 12
+const MAX_CONTEXT_TOKENS_ESTIMATE = 7_500
+const MAX_SYSTEM_PROMPT_CHARS = 3_500
+const MAX_TOOL_RESULT_CHARS = 1_200
+const MAX_REPEATED_TOOL_CALLS = 2
 const GITHUB_DEFAULT_OWNER = process.env.GITHUB_OWNER || 'jadiel054'
 
 type Provider = 'groq' | 'openrouter' | 'anthropic' | 'openai' | 'google' | 'cerebras'
@@ -333,6 +338,100 @@ function normalizeApiKey(value: unknown) {
   return String(value || '').trim()
 }
 
+function compactarTexto(texto: string, limite: number) {
+  const valor = String(texto || '').trim()
+  if (!valor || valor.length <= limite) return valor
+  const metade = Math.max(200, Math.floor((limite - 40) / 2))
+  return `${valor.slice(0, metade)}\n...[contexto compactado]...\n${valor.slice(-metade)}`
+}
+
+function estimarTokensTexto(texto: string) {
+  return Math.ceil(String(texto || '').length / 4)
+}
+
+function estimarTokensConteudo(content: string | MessagePart[] | null) {
+  if (typeof content === 'string') return estimarTokensTexto(content)
+  if (!Array.isArray(content)) return 0
+  return content.reduce((total, parte) => {
+    if (parte.type === 'text') return total + estimarTokensTexto(parte.text || '')
+    if (parte.type === 'image_url') return total + 512
+    return total
+  }, 0)
+}
+
+function sanitizarToolCalls(
+  toolCalls: Array<{ id: string, function: { name: string, arguments: string } }> | undefined,
+) {
+  return toolCalls?.map((toolCall) => ({
+    ...toolCall,
+    function: {
+      ...toolCall.function,
+      arguments: compactarTexto(toolCall.function.arguments || '', 800),
+    },
+  }))
+}
+
+function sanitizarMensagemContexto(message: ConversationMessage): ConversationMessage {
+  if (message.role === 'system') {
+    return { ...message, content: compactarTexto(extrairTextoConteudo(message.content), MAX_SYSTEM_PROMPT_CHARS) }
+  }
+
+  if (message.role === 'tool') {
+    return { ...message, content: compactarTexto(extrairTextoConteudo(message.content), MAX_TOOL_RESULT_CHARS) }
+  }
+
+  if (typeof message.content === 'string') {
+    const limite = message.role === 'assistant' ? 2_000 : 3_000
+    return {
+      ...message,
+      content: compactarTexto(message.content, limite),
+      ...(message.tool_calls ? { tool_calls: sanitizarToolCalls(message.tool_calls) } : {}),
+    }
+  }
+
+  if (Array.isArray(message.content)) {
+    return {
+      ...message,
+      content: message.content.map((parte) => (
+        parte.type === 'text'
+          ? { ...parte, text: compactarTexto(parte.text || '', 2_000) }
+          : parte
+      )),
+      ...(message.tool_calls ? { tool_calls: sanitizarToolCalls(message.tool_calls) } : {}),
+    }
+  }
+
+  return message.tool_calls
+    ? { ...message, tool_calls: sanitizarToolCalls(message.tool_calls) }
+    : message
+}
+
+function estimarTokensMensagem(message: ConversationMessage) {
+  const base = estimarTokensConteudo(message.content)
+  const toolCalls = (message.tool_calls || []).reduce(
+    (total, toolCall) => total + estimarTokensTexto(toolCall.function.name || '') + estimarTokensTexto(toolCall.function.arguments || ''),
+    0,
+  )
+  return base + toolCalls + 12
+}
+
+function diagnosticoContexto(conversation: Array<ConversationMessage>) {
+  const mensagens = conversation.length
+  const tamanhoContexto = conversation.reduce((total, message) => {
+    const toolCalls = (message.tool_calls || []).reduce(
+      (subtotal, toolCall) => subtotal + String(toolCall.function.arguments || '').length + String(toolCall.function.name || '').length,
+      0,
+    )
+    return total + extrairTextoConteudo(message.content).length + toolCalls
+  }, 0)
+
+  return {
+    mensagens,
+    tamanhoContexto,
+    tokensEstimados: conversation.reduce((total, message) => total + estimarTokensMensagem(message), 0),
+  }
+}
+
 function extrairTextoConteudo(content: unknown) {
   if (typeof content === 'string') return content
   if (!Array.isArray(content)) return ''
@@ -426,8 +525,31 @@ function normalizarMensagensEntrada(messages: Array<{ role: string, content: str
 }
 
 function compactHistory(history: Array<ConversationMessage>) {
-  const systemMessages = history.filter((item) => item.role === 'system')
-  const recentMessages = history.filter((item) => item.role !== 'system').slice(-20)
+  const systemMessages = history
+    .filter((item) => item.role === 'system')
+    .map(sanitizarMensagemContexto)
+
+  const recentMessages: Array<ConversationMessage> = []
+  let tokensEstimados = systemMessages.reduce((total, message) => total + estimarTokensMensagem(message), 0)
+
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const atual = history[index]
+    if (!atual || atual.role === 'system') continue
+    const sanitizada = sanitizarMensagemContexto(atual)
+    const custo = estimarTokensMensagem(sanitizada)
+    if (recentMessages.length >= MAX_CONTEXT_MESSAGES && tokensEstimados + custo > MAX_CONTEXT_TOKENS_ESTIMATE) {
+      continue
+    }
+    if (recentMessages.length > 0 && tokensEstimados + custo > MAX_CONTEXT_TOKENS_ESTIMATE) {
+      continue
+    }
+    recentMessages.unshift(sanitizada)
+    tokensEstimados += custo
+    if (recentMessages.length >= MAX_CONTEXT_MESSAGES && tokensEstimados >= MAX_CONTEXT_TOKENS_ESTIMATE) {
+      break
+    }
+  }
+
   return [...systemMessages, ...recentMessages]
 }
 
@@ -479,7 +601,19 @@ function obterApiKey(provider: string, apiKeys: Record<string, string> | undefin
   if (!providerNormalizado) return ''
   if (providerNormalizado === 'groq') return normalizeApiKey(apiKeys?.groq || process.env.GROQ_API_KEY || '')
   if (providerNormalizado === 'cerebras') return normalizeApiKey(apiKeys?.cerebras || process.env.CEREBRAS_API_KEY || '')
-  if (providerNormalizado === 'openrouter') return normalizeApiKey(apiKeys?.openrouter || process.env.OPENROUTER_API_KEY || '')
+  if (providerNormalizado === 'openrouter') {
+    return normalizeApiKey(
+      apiKeys?.openrouter
+      || apiKeys?.deepseek
+      || apiKeys?.qwen
+      || apiKeys?.glm
+      || apiKeys?.openrouter_deepseek
+      || apiKeys?.openrouter_qwen
+      || apiKeys?.openrouter_glm
+      || process.env.OPENROUTER_API_KEY
+      || '',
+    )
+  }
   if (providerNormalizado === 'anthropic') return normalizeApiKey(apiKeys?.anthropic || apiKeys?.claude || process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY || '')
   if (providerNormalizado === 'openai') return normalizeApiKey(apiKeys?.openai || process.env.OPENAI_API_KEY || '')
   return normalizeApiKey(apiKeys?.google || apiKeys?.gemini || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '')
@@ -523,6 +657,51 @@ function criarHeadersProvider(provider: 'groq' | 'cerebras' | 'openrouter' | 'an
   }
 
   return headers
+}
+
+function construirPayloadProvider(
+  modelo: ModeloConfig,
+  conversation: Array<ConversationMessage>,
+  tools: typeof TOOL_DEFINITIONS,
+) {
+  if (modelo.provider === 'anthropic') {
+    return {
+      model: modelo.id,
+      max_tokens: Math.min(modelo.maxTokens, 4096),
+      system: extrairTextoConteudo(conversation.find((item) => item.role === 'system')?.content || ''),
+      messages: converterConversationParaAnthropic(conversation),
+      tools: modelo.suportaTools ? converterToolsParaAnthropic(tools) : undefined,
+    }
+  }
+
+  if (modelo.provider === 'google') {
+    return {
+      systemInstruction: { role: 'user', parts: [{ text: extrairTextoConteudo(conversation.find((item) => item.role === 'system')?.content || '') }] },
+      contents: converterConversationParaGemini(conversation),
+      tools: modelo.suportaTools ? converterToolsParaGemini(tools) : undefined,
+      toolConfig: modelo.suportaTools ? { functionCallingConfig: { mode: 'AUTO' } } : undefined,
+    }
+  }
+
+  if (modelo.provider === 'cerebras') {
+    return {
+      model: modelo.id,
+      messages: converterConversationParaCerebras(conversation, modelo.id),
+      tools: modelo.suportaTools ? converterToolsParaCerebras(tools) : undefined,
+      tool_choice: modelo.suportaTools ? 'auto' : undefined,
+      max_completion_tokens: Math.min(modelo.maxTokens, 4096),
+      temperature: modelo.temperatura,
+    }
+  }
+
+  return {
+    model: modelo.id,
+    messages: conversation,
+    tools: modelo.suportaTools ? tools : undefined,
+    tool_choice: modelo.suportaTools ? 'auto' : undefined,
+    max_tokens: Math.min(modelo.maxTokens, 4096),
+    temperature: modelo.temperatura,
+  }
 }
 
 function serializarErro(error: unknown) {
@@ -841,6 +1020,7 @@ async function chamarModelo(
   conversation: Array<ConversationMessage>,
   tools: typeof TOOL_DEFINITIONS,
   apiKeys: Record<string, string> | undefined,
+  sendEvent: (type: string, data: Record<string, unknown>) => void = () => {},
 ) {
   const apiKey = obterApiKey(modelo.provider, apiKeys)
   if (!apiKey) {
@@ -851,43 +1031,27 @@ async function chamarModelo(
   while (tentativa < MAX_LLM_ATTEMPTS) {
     tentativa += 1
     try {
+      const headers = criarHeadersProvider(modelo.provider, apiKey)
+      const payload = construirPayloadProvider(modelo, conversation, tools)
+      const contexto = diagnosticoContexto(conversation)
+      const diagnostico = {
+        provider: modelo.provider,
+        modelo: modelo.id,
+        mensagens: contexto.mensagens,
+        tokensEstimados: contexto.tokensEstimados,
+        tamanhoContexto: contexto.tamanhoContexto,
+        apiKeyPresente: Boolean(apiKey),
+        authorizationHeaderPresente: Boolean(headers.Authorization || headers['x-api-key']),
+      }
+      console.info('[MORPHEUS][llm_diagnostic]', diagnostico)
+      sendEvent('thinking', {
+        content: `Diagnóstico temporário: provider=${modelo.provider}, modelo=${modelo.id}, mensagens=${contexto.mensagens}, tokens≈${contexto.tokensEstimados}, contexto=${contexto.tamanhoContexto} chars, apiKey=${diagnostico.apiKeyPresente ? 'ok' : 'ausente'}, authHeader=${diagnostico.authorizationHeaderPresente ? 'ok' : 'ausente'}`,
+      })
+
       const response = await fetch(obterUrlProvider(modelo.provider, modelo.id, apiKey), {
         method: 'POST',
-        headers: criarHeadersProvider(modelo.provider, apiKey),
-        body: JSON.stringify(
-          modelo.provider === 'anthropic'
-            ? {
-                model: modelo.id,
-                max_tokens: Math.min(modelo.maxTokens, 4096),
-                system: extrairTextoConteudo(conversation.find((item) => item.role === 'system')?.content || ''),
-                messages: converterConversationParaAnthropic(conversation),
-                tools: modelo.suportaTools ? converterToolsParaAnthropic(tools) : undefined,
-              }
-            : modelo.provider === 'google'
-              ? {
-                  systemInstruction: { role: 'user', parts: [{ text: extrairTextoConteudo(conversation.find((item) => item.role === 'system')?.content || '') }] },
-                  contents: converterConversationParaGemini(conversation),
-                  tools: modelo.suportaTools ? converterToolsParaGemini(tools) : undefined,
-                  toolConfig: modelo.suportaTools ? { functionCallingConfig: { mode: 'AUTO' } } : undefined,
-                }
-              : modelo.provider === 'cerebras'
-                ? {
-                    model: modelo.id,
-                    messages: converterConversationParaCerebras(conversation, modelo.id),
-                    tools: modelo.suportaTools ? converterToolsParaCerebras(tools) : undefined,
-                    tool_choice: modelo.suportaTools ? 'auto' : undefined,
-                    max_completion_tokens: Math.min(modelo.maxTokens, 4096),
-                    temperature: modelo.temperatura,
-                  }
-              : {
-                  model: modelo.id,
-                  messages: conversation,
-                  tools: modelo.suportaTools ? tools : undefined,
-                  tool_choice: modelo.suportaTools ? 'auto' : undefined,
-                  max_tokens: Math.min(modelo.maxTokens, 4096),
-                  temperature: modelo.temperatura,
-                },
-        ),
+        headers,
+        body: JSON.stringify(payload),
       })
 
       if (!response.ok) {
@@ -937,7 +1101,7 @@ async function chamarComFallback(
   for (const modelo of cadeia) {
     try {
       sendEvent('thinking', { content: `Modelo selecionado: ${modelo.id}` })
-      const data = await chamarModelo(modelo, conversation, tools, apiKeys)
+      const data = await chamarModelo(modelo, conversation, tools, apiKeys, sendEvent)
       return { data, modelo }
     } catch (error) {
       ultimoErro = error
@@ -998,6 +1162,7 @@ export type ChatRequestPayload = {
   model?: string
   conversationId?: string
   providerOrder?: string[]
+  systemPrompt?: string
 }
 
 export type ChatExecutionResult = {
@@ -1011,7 +1176,7 @@ export async function processarPipelineChat(
   payload: ChatRequestPayload,
   sendEvent: (type: string, data: Record<string, unknown>) => void = () => {},
 ): Promise<ChatExecutionResult> {
-  const { messages, apiKeys, model, conversationId, providerOrder: providerOrderBody } = payload
+  const { messages, apiKeys, model, conversationId, providerOrder: providerOrderBody, systemPrompt } = payload
   if (!messages?.length) {
     throw new Error('messages required')
   }
@@ -1025,8 +1190,12 @@ export async function processarPipelineChat(
   const modeloFoiSelecionado = Boolean(model && model !== 'auto')
   const planner = new PlannerEngine(conversationId || crypto.randomUUID())
   const reflector = new ReflectorEngine()
+  const repeticoesTool = new Map<string, number>()
 
-  const contextoSistema = montarPrompt('planejamento', `Tipo de tarefa: ${tipoTarefa}\nSe o modelo atual não suportar tools ou visão para concluir a tarefa, explique isso claramente e sugira um modelo compatível.`)
+  const contextoSistema = compactarTexto([
+    montarPrompt('planejamento', `Tipo de tarefa: ${tipoTarefa}\nSe o modelo atual não suportar tools ou visão para concluir a tarefa, explique isso claramente e sugira um modelo compatível.`),
+    systemPrompt ? `--- CONTEXTO DO APP ---\n${systemPrompt}` : '',
+  ].filter(Boolean).join('\n\n'), MAX_SYSTEM_PROMPT_CHARS)
   let conversation: Array<ConversationMessage> = [
     { role: 'system', content: contextoSistema },
     ...mensagensNormalizadas,
@@ -1061,9 +1230,14 @@ export async function processarPipelineChat(
 
     while (loopCount < MAX_LOOPS) {
       loopCount += 1
+      conversation = compactHistory(conversation)
+      const contextoAtual = diagnosticoContexto(conversation)
       sendEvent('plan_update', {
         step: loopCount === 1 ? 'analyze' : loopCount === 2 ? 'plan' : loopCount === 3 ? 'execute' : 'synthesize',
         status: 'running',
+      })
+      sendEvent('thinking', {
+        content: `Contexto preparado: ${contextoAtual.mensagens} mensagens, ${contextoAtual.tamanhoContexto} chars, tokens≈${contextoAtual.tokensEstimados}`,
       })
 
       const llmResult = await chamarComFallback(modeloInicial, conversation, TOOL_DEFINITIONS, apiKeys, sendEvent, providerOrder, modeloFoiSelecionado)
@@ -1089,6 +1263,12 @@ export async function processarPipelineChat(
 
         const executarTool = async (toolCall: { id: string, function: { name: string, arguments: string } }) => {
           const args = safeJsonParse(toolCall.function.arguments, {})
+          const assinaturaTool = `${toolCall.function.name}:${JSON.stringify(args)}`
+          const repeticoes = (repeticoesTool.get(assinaturaTool) || 0) + 1
+          repeticoesTool.set(assinaturaTool, repeticoes)
+          if (repeticoes > MAX_REPEATED_TOOL_CALLS) {
+            throw new Error(`Loop interno detectado: tool ${toolCall.function.name} repetida ${repeticoes}x com os mesmos argumentos`)
+          }
           sendEvent('tool_call', { id: toolCall.id, name: toolCall.function.name, arguments: args })
 
           const resultado = await executarToolComCircuito(toolCall.function.name, async () => {
@@ -1368,7 +1548,12 @@ export async function processarPipelineChat(
 
         conversation.push({ role: 'assistant', content: extrairTextoConteudo(choice.message.content), tool_calls: toolCalls })
         for (const { toolCall, resultado } of [...resultadosLeitura, ...resultadosEscrita]) {
-          conversation.push({ role: 'tool', tool_call_id: toolCall.id, name: toolCall.function.name, content: resultado })
+          conversation.push({
+            role: 'tool',
+            tool_call_id: toolCall.id,
+            name: toolCall.function.name,
+            content: compactarTexto(resultado, MAX_TOOL_RESULT_CHARS),
+          })
         }
         continue
       }

@@ -43,11 +43,18 @@ const KEEP_ALIVE_INTERVAL_MS = 14 * 60 * 1000
 function migrateOldKeys() {
   try {
     const migrated = localStorage.getItem('morpheus_keys_migrated')
-    if (migrated) return
-    const old = JSON.parse(localStorage.getItem('morpheus_integrations') || '{}')
+    let old = JSON.parse(localStorage.getItem('morpheus_integrations') || '{}')
+    const dottedPaths = [
+      'groq.key', 'openrouter.key', 'deepseek.key', 'gemini.key', 'openai.key', 'claude.key',
+      'github.token', 'github.username', 'github.repos', 'vercel.token', 'vercel.projectId',
+      'vercel.teamId', 'supabase.url', 'supabase.anonKey', 'supabase.serviceKey',
+      'brave.api_key', 'openweather.key', 'elevenlabs.key', 'resend.key', 'alerts.email', 'alerts.phone',
+    ]
+    const hasFlatPaths = dottedPaths.some((path) => Object.prototype.hasOwnProperty.call(old, path))
+    if (migrated && !hasFlatPaths) return
     let changed = false
     const migrations = {
-      'groq_key': 'groq.key', 'openrouter_key': 'openrouter.key', 'deepseek_key': 'deepseek.key',
+      'groq_key': 'groq.key', 'openrouter_key': 'openrouter.key', 'deepseek_key': 'openrouter.key',
       'gemini_key': 'gemini.key', 'openai_key': 'openai.key', 'claude_key': 'claude.key',
       'github_token': 'github.token', 'github_username': 'github.username', 'github_repos': 'github.repos',
       'vercel_token': 'vercel.token', 'vercel_project_id': 'vercel.projectId', 'vercel_team_id': 'vercel.teamId',
@@ -56,7 +63,22 @@ function migrateOldKeys() {
       'resend_key': 'resend.key', 'alert_email': 'alerts.email', 'alert_phone': 'alerts.phone',
     }
     for (const [oldKey, newPath] of Object.entries(migrations)) {
-      if (old[oldKey] && !getNestedLocal(old, newPath)) { old[newPath] = old[oldKey]; delete old[oldKey]; changed = true }
+      if (old[oldKey] && !readIntegrationValue(old, newPath)) {
+        old = setNestedLocal(old, newPath, old[oldKey])
+        delete old[oldKey]
+        changed = true
+      }
+    }
+    for (const dottedPath of dottedPaths) {
+      if (Object.prototype.hasOwnProperty.call(old, dottedPath) && !readIntegrationValue(old, dottedPath)) {
+        old = setNestedLocal(old, dottedPath, old[dottedPath])
+        delete old[dottedPath]
+        changed = true
+      }
+    }
+    if (old.deepseek?.key && !getNestedLocal(old, 'openrouter.key')) {
+      old = { ...old, openrouter: { ...(old.openrouter || {}), key: old.deepseek.key } }
+      changed = true
     }
     if (changed) { localStorage.setItem('morpheus_integrations', JSON.stringify(old)) }
     localStorage.setItem('morpheus_keys_migrated', 'true')
@@ -65,8 +87,63 @@ function migrateOldKeys() {
 
 function getNestedLocal(obj, path) { return path.split('.').reduce((o, k) => (o && o[k] !== undefined) ? o[k] : '', obj) }
 
+function readIntegrationValue(obj, path) {
+  return obj?.[path] !== undefined ? obj[path] : getNestedLocal(obj, path)
+}
+
+function setNestedLocal(obj, path, value) {
+  const keys = path.split('.')
+  const result = { ...obj }
+  let current = result
+  for (let i = 0; i < keys.length - 1; i++) {
+    current[keys[i]] = current[keys[i]] && typeof current[keys[i]] === 'object' ? { ...current[keys[i]] } : {}
+    current = current[keys[i]]
+  }
+  current[keys[keys.length - 1]] = value
+  return result
+}
+
 function normalizeApiKey(value) {
   return String(value || '').trim()
+}
+
+function resolveProviderKey(integrations, storedSettings, provider) {
+  if (provider === 'openrouter') {
+    return normalizeApiKey(
+      readIntegrationValue(integrations, 'openrouter.key')
+      || readIntegrationValue(integrations, 'deepseek.key')
+      || readIntegrationValue(integrations, 'qwen.key')
+      || readIntegrationValue(integrations, 'glm.key')
+      || storedSettings.openrouter_api_key
+      || storedSettings.deepseek_api_key
+      || storedSettings.qwen_api_key
+      || storedSettings.glm_api_key
+      || '',
+    )
+  }
+  if (provider === 'anthropic') {
+    return normalizeApiKey(
+      readIntegrationValue(integrations, 'claude.key')
+      || readIntegrationValue(integrations, 'anthropic.key')
+      || storedSettings.claude_api_key
+      || storedSettings.anthropic_api_key
+      || '',
+    )
+  }
+  if (provider === 'google') {
+    return normalizeApiKey(
+      readIntegrationValue(integrations, 'gemini.key')
+      || readIntegrationValue(integrations, 'google.key')
+      || storedSettings.gemini_api_key
+      || storedSettings.google_api_key
+      || '',
+    )
+  }
+  return normalizeApiKey(
+    readIntegrationValue(integrations, `${provider}.key`)
+    || storedSettings?.[`${provider}_api_key`]
+    || '',
+  )
 }
 
 async function readResponseBody(response) {
@@ -390,12 +467,12 @@ export default function Morpheus() {
     const storedSettings = (() => { try { return JSON.parse(localStorage.getItem('morpheus_settings') || '{}') } catch { return {} } })()
     const integrations = (() => { try { return JSON.parse(localStorage.getItem('morpheus_integrations') || '{}') } catch { return {} } })()
     const selectedModel = settings.ai_model || storedSettings.ai_model || 'auto'
-    const groqKey = normalizeApiKey(integrations.groq?.key || storedSettings.groq_api_key || '')
-    const openrouterKey = normalizeApiKey(integrations.openrouter?.key || storedSettings.openrouter_api_key || '')
-    const cerebrasKey = normalizeApiKey(integrations.cerebras?.key || storedSettings.cerebras_api_key || '')
-    const claudeKey = normalizeApiKey(integrations.claude?.key || integrations.anthropic?.key || storedSettings.claude_api_key || storedSettings.anthropic_api_key || '')
-    const openaiKey = normalizeApiKey(integrations.openai?.key || storedSettings.openai_api_key || '')
-    const geminiKey = normalizeApiKey(integrations.gemini?.key || integrations.google?.key || storedSettings.gemini_api_key || storedSettings.google_api_key || '')
+    const groqKey = resolveProviderKey(integrations, storedSettings, 'groq')
+    const openrouterKey = resolveProviderKey(integrations, storedSettings, 'openrouter')
+    const cerebrasKey = resolveProviderKey(integrations, storedSettings, 'cerebras')
+    const claudeKey = resolveProviderKey(integrations, storedSettings, 'anthropic')
+    const openaiKey = resolveProviderKey(integrations, storedSettings, 'openai')
+    const geminiKey = resolveProviderKey(integrations, storedSettings, 'google')
     const isValidKey = (k) => {
       const normalized = normalizeApiKey(k)
       return normalized && normalized.length > 10 && normalized !== 'sk-...'
@@ -433,11 +510,12 @@ export default function Morpheus() {
             Authorization: `Bearer ${session.access_token}`,
           },
           body: JSON.stringify({
-            messages: [...history.slice(-10), { role: 'user', content: userText }],
+            messages: [...history.slice(-6), { role: 'user', content: userText }],
             apiKeys,
             model: selectedModel,
             conversationId: activeTabId,
             providerOrder,
+            systemPrompt,
           }),
         })
 
@@ -543,7 +621,7 @@ export default function Morpheus() {
       const systemPrompt = buildAgentSystemPrompt(agent?.key || null, personalityLayer + '\n' + styleLayer, settings.language, settings.user_name, memoryPrompt)
       const fullPrompt = searchContext ? text + '\n\n[DADOS ATUAIS DA WEB]\n' + searchContext : text
       const content = buildContentWithAttachments(fullPrompt, files)
-      const history = activeTab.messages.slice(-10).map(m => ({ role: m.role, content: m.content }))
+      const history = activeTab.messages.slice(-6).map(m => ({ role: m.role, content: m.content }))
       addStep('Chamando LLM...')
       const result = await callAI(systemPrompt, content, history)
       completeLastStep('Modelo: ' + (result.model || 'unknown'))

@@ -46,16 +46,41 @@ function normalizeApiKey(value) {
   return String(value || '').trim()
 }
 
+function readIntegrationValue(obj, path) {
+  return obj?.[path] !== undefined
+    ? obj[path]
+    : path.split('.').reduce((o, k) => (o && o[k] !== undefined) ? o[k] : '', obj)
+}
+
+function resolveProviderKey(integrations, provider) {
+  if (provider === 'openrouter') {
+    return normalizeApiKey(
+      readIntegrationValue(integrations, 'openrouter.key')
+      || readIntegrationValue(integrations, 'deepseek.key')
+      || readIntegrationValue(integrations, 'qwen.key')
+      || readIntegrationValue(integrations, 'glm.key')
+      || '',
+    )
+  }
+  if (provider === 'anthropic') {
+    return normalizeApiKey(readIntegrationValue(integrations, 'claude.key') || readIntegrationValue(integrations, 'anthropic.key') || '')
+  }
+  if (provider === 'google') {
+    return normalizeApiKey(readIntegrationValue(integrations, 'gemini.key') || readIntegrationValue(integrations, 'google.key') || '')
+  }
+  return normalizeApiKey(readIntegrationValue(integrations, `${provider}.key`) || '')
+}
+
 async function testLLMProvider(apiBaseUrl, accessToken, provider) {
   try {
     const i = JSON.parse(localStorage.getItem('morpheus_integrations') || '{}')
     const providerKeys = {
-      groq: normalizeApiKey(i.groq?.key),
-      cerebras: normalizeApiKey(i.cerebras?.key),
-      openrouter: normalizeApiKey(i.openrouter?.key),
-      anthropic: normalizeApiKey(i.claude?.key || i.anthropic?.key),
-      openai: normalizeApiKey(i.openai?.key),
-      google: normalizeApiKey(i.gemini?.key || i.google?.key),
+      groq: resolveProviderKey(i, 'groq'),
+      cerebras: resolveProviderKey(i, 'cerebras'),
+      openrouter: resolveProviderKey(i, 'openrouter'),
+      anthropic: resolveProviderKey(i, 'anthropic'),
+      openai: resolveProviderKey(i, 'openai'),
+      google: resolveProviderKey(i, 'google'),
     }
     const key = providerKeys[provider]
     if (!accessToken) return { ok: false, error: 'Sessao nao disponivel para testar via backend' }
