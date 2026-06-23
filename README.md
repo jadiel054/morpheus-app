@@ -62,6 +62,7 @@ Versão atualizada com health check real do backend, validação de tools com Zo
 - Frontend atual: `https://morpheus-app-six.vercel.app`
 - Backend esperado no Render: `https://morpheus-api.onrender.com`
 - Endpoint de saúde: `/api/health`
+- Diagnóstico profundo de integrações: `/api/health/dependencies`
 - Endpoint de circuit breaker: `/api/health/circuit-breaker`
 
 ## Estrutura

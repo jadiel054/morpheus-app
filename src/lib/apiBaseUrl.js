@@ -1,4 +1,4 @@
-const FALLBACK_RENDER_API_URL = 'https://morpheus-app-5bmx.onrender.com'
+const FALLBACK_RENDER_API_URL = 'https://morpheus-api.onrender.com'
 
 export function getApiBaseUrl() {
   const envUrl = import.meta.env.VITE_API_URL

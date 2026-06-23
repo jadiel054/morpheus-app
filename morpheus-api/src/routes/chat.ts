@@ -746,6 +746,25 @@ function extrairMensagemErroProvider(
   return `${providerLabel}: ${details}`
 }
 
+function statusEhRetriavel(status: number) {
+  return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500
+}
+
+function extrairRetryAfterMs(retryAfter: string | null) {
+  if (!retryAfter) return null
+
+  const emSegundos = Number(retryAfter)
+  if (Number.isFinite(emSegundos) && emSegundos >= 0) {
+    return emSegundos * 1000
+  }
+
+  const dataRetry = Date.parse(retryAfter)
+  if (Number.isNaN(dataRetry)) return null
+
+  const diff = dataRetry - Date.now()
+  return diff > 0 ? diff : null
+}
+
 function converterToolsParaAnthropic(tools: typeof TOOL_DEFINITIONS) {
   return tools.map((tool) => ({
     name: tool.function.name,
@@ -1056,8 +1075,18 @@ async function chamarModelo(
 
       if (!response.ok) {
         const errorBody = await response.text()
-        if (tentativa >= MAX_LLM_ATTEMPTS) {
-          throw new Error(extrairMensagemErroProvider(modelo.provider, response.status, errorBody, modelo.id))
+        const mensagemErro = extrairMensagemErroProvider(modelo.provider, response.status, errorBody, modelo.id)
+
+        if (response.status === 429) {
+          const retryAfterMs = extrairRetryAfterMs(response.headers.get('retry-after'))
+          const retryAfterMensagem = retryAfterMs
+            ? ` Aguarde cerca de ${Math.max(1, Math.ceil(retryAfterMs / 1000))}s antes de tentar novamente.`
+            : ''
+          throw new Error(`${mensagemErro}${retryAfterMensagem}`)
+        }
+
+        if (!statusEhRetriavel(response.status) || tentativa >= MAX_LLM_ATTEMPTS) {
+          throw new Error(mensagemErro)
         }
 
         await sleep(RETRY_DELAY * tentativa)

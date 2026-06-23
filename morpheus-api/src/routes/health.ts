@@ -12,10 +12,28 @@ type CheckResultado = {
 
 const CLAUDE_MODEL_ID = 'claude-sonnet-4-5-20250929'
 
+function possuiValorConfigurado(value: string | undefined) {
+  return Boolean(String(value || '').trim())
+}
+
 function obterSupabaseConfig() {
   return {
     url: process.env.SUPABASE_URL,
     key: process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY,
+  }
+}
+
+function resumirConfiguracao() {
+  return {
+    supabase: Boolean(obterSupabaseConfig().url && obterSupabaseConfig().key),
+    github: possuiValorConfigurado(process.env.GITHUB_TOKEN),
+    vercel: possuiValorConfigurado(process.env.VERCEL_TOKEN),
+    groq: possuiValorConfigurado(process.env.GROQ_API_KEY),
+    cerebras: possuiValorConfigurado(process.env.CEREBRAS_API_KEY),
+    openrouter: possuiValorConfigurado(process.env.OPENROUTER_API_KEY),
+    anthropic: possuiValorConfigurado(process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY),
+    openai: possuiValorConfigurado(process.env.OPENAI_API_KEY),
+    google: possuiValorConfigurado(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY),
   }
 }
 
@@ -51,6 +69,47 @@ async function verificarEndpoint(
 }
 
 router.get('/', async (_req: Request, res: Response) => {
+  const inicioTotal = Date.now()
+  const supabaseConfig = obterSupabaseConfig()
+  let supabase: CheckResultado
+
+  if (!supabaseConfig.url || !supabaseConfig.key) {
+    supabase = { status: 'erro', error: 'SUPABASE_URL/SUPABASE_SERVICE_KEY nao configurados' }
+  } else {
+    try {
+      const inicio = Date.now()
+      const client = createClient(supabaseConfig.url, supabaseConfig.key)
+      const testarTabela = async (tabela: string) => {
+        const { error } = await client.from(tabela).select('id').limit(1)
+        return error ? error.message : null
+      }
+
+      const erro1 = await testarTabela('user_settings')
+      const erro2 = erro1 ? await testarTabela('conversations') : null
+      const erroFinal = erro2 || erro1
+      supabase = erroFinal
+        ? { status: 'erro', error: erroFinal }
+        : { status: 'ok', latency: Date.now() - inicio }
+    } catch (error) {
+      supabase = { status: 'erro', error: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
+  res.status(200).json({
+    status: supabase.status === 'ok' ? 'ok' : 'degradado',
+    versao: '2.0.0',
+    ambiente: process.env.NODE_ENV || 'development',
+    latencia_total_ms: Date.now() - inicioTotal,
+    servicos: {
+      api: { status: 'ok' },
+      supabase,
+    },
+    configuracao: resumirConfiguracao(),
+    timestamp: new Date().toISOString(),
+  })
+})
+
+router.get('/dependencies', async (_req: Request, res: Response) => {
   const checks: Record<string, CheckResultado> = {}
   const inicioTotal = Date.now()
   const supabaseConfig = obterSupabaseConfig()
@@ -128,12 +187,14 @@ router.get('/', async (_req: Request, res: Response) => {
 
   // Render Health Check: não bloquear deploy por integrações opcionais.
   // Retorna sempre 200 e sinaliza "degradado" no JSON quando necessário.
+  // Esta rota profunda deve ser usada apenas para diagnostico manual.
   res.status(200).json({
     status: allOk ? 'ok' : 'degradado',
     versao: '2.0.0',
     ambiente: process.env.NODE_ENV || 'development',
     latencia_total_ms: Date.now() - inicioTotal,
     servicos: checks,
+    configuracao: resumirConfiguracao(),
     timestamp: new Date().toISOString(),
   })
 })
