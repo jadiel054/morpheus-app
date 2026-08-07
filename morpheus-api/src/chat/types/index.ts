@@ -32,6 +32,22 @@ export type ConversationMessage = {
 }
 
 // -----------------------------------------------------------------------------
+// Tool Types
+// -----------------------------------------------------------------------------
+export type ToolDefinition = {
+  type: 'function'
+  function: {
+    name: string
+    description: string
+    parameters: {
+      type: 'object'
+      properties: Record<string, unknown>
+      required?: string[]
+    }
+  }
+}
+
+// -----------------------------------------------------------------------------
 // Request/Response Types
 // -----------------------------------------------------------------------------
 export type ChatRequestPayload = {
@@ -52,6 +68,26 @@ export type ChatExecutionResult = {
   model: string
   loops: number
   tokensUsed: number
+}
+
+// -----------------------------------------------------------------------------
+// Provider Response Types
+// -----------------------------------------------------------------------------
+export type ProviderResponse = {
+  choices?: Array<{
+    finish_reason?: string
+    message?: {
+      content?: string | MessagePart[] | null
+      tool_calls?: ToolCall[]
+      tool_call_id?: string
+      name?: string
+    }
+  }>
+  usage?: {
+    prompt_tokens?: number
+    completion_tokens?: number
+    total_tokens?: number
+  }
 }
 
 // -----------------------------------------------------------------------------

@@ -110,6 +110,15 @@ export function inferirTipoTarefa(userMessage: string): 'debug' | 'codigo' | 'an
 }
 
 // -----------------------------------------------------------------------------
+// URL Utilities
+// -----------------------------------------------------------------------------
+export function parseDataUrl(url: string): { mimeType: string; data: string } | null {
+  const match = url.match(/^data:(.+?);base64,(.+)$/)
+  if (!match) return null
+  return { mimeType: match[1], data: match[2] }
+}
+
+// -----------------------------------------------------------------------------
 // Task Detection
 // -----------------------------------------------------------------------------
 export function tarefaProvavelmenteExigeTools(userMessage: string): boolean {
