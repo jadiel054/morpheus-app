@@ -101,10 +101,9 @@ export const MODELOS: Record<string, ModeloConfig> = {
     uso: 'tarefas gerais com OpenAI',
   },
   google_gemini_flash: {
-    // Google retirou gemini-2.0-flash; usar linha atual
-    id: process.env.GOOGLE_GEMINI_MODEL || 'gemini-2.5-flash',
+    id: 'gemini-2.5-flash',
     provider: 'google',
-    nome: 'Gemini Flash (Google)',
+    nome: 'Gemini 2.5 Flash (Google)',
     suportaTools: true,
     suportaVisao: true,
     temperatura: 0.4,

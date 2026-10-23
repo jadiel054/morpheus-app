@@ -47,6 +47,12 @@ function getPublicBackendUrl() {
   ).trim().replace(/\/$/, '')
 }
 
+/** When Aegis owns the BotFather webhook, Morpheus must not call setWebhook. */
+function telegramManagedByAegis() {
+  const owner = String(process.env.TELEGRAM_WEBHOOK_OWNER || process.env.TELEGRAM_MANAGED_BY || '').toLowerCase()
+  return owner === 'aegis' || owner === 'aegis-control'
+}
+
 function normalizeTelegramText(value: unknown) {
   return String(value || '').trim()
 }
@@ -78,82 +84,83 @@ async function telegramApi(method: string, body?: Record<string, unknown>) {
   })
 
   const text = await response.text()
-  let data: Record<string, unknown> = {}
-  try { data = text ? JSON.parse(text) : {} } catch { data = { raw: text } }
-
-  if (!response.ok || data.ok === false) {
-    throw new Error(String(data.description || data.error_code || text || `Telegram HTTP ${response.status}`))
+  let data: any
+  try {
+    data = JSON.parse(text)
+  } catch {
+    throw new Error(`Telegram API ${method}: ${text.slice(0, 200)}`)
   }
-
-  return data
+  if (!data.ok) {
+    throw new Error(data.description || `Telegram API ${method} falhou`)
+  }
+  return data.result
 }
 
-async function sendTelegramText(chatId: string, text: string) {
-  const chunks = chunkTelegramMessage(text)
-  for (const chunk of chunks) {
+async function sendTelegramText(chatId: string | number, text: string) {
+  for (const chunk of chunkTelegramMessage(text)) {
     await telegramApi('sendMessage', {
       chat_id: chatId,
       text: chunk,
-      disable_web_page_preview: true,
     })
-  }
-}
-
-async function sendTelegramTyping(chatId: string) {
-  try {
-    await telegramApi('sendChatAction', { chat_id: chatId, action: 'typing' })
-  } catch (error) {
-    console.warn('[Telegram] Falha ao enviar typing:', error)
-  }
-}
-
-function extractIncomingMessage(update: TelegramUpdate) {
-  const message = update.message || update.edited_message
-  if (!message?.chat?.id) return null
-
-  return {
-    chatId: String(message.chat.id),
-    text: normalizeTelegramText(message.text || message.caption || ''),
-    senderId: String(message.from?.id || ''),
-    senderName: normalizeTelegramText(message.from?.username || message.from?.first_name || ''),
   }
 }
 
 async function processTelegramUpdate(update: TelegramUpdate) {
-  const incoming = extractIncomingMessage(update)
-  if (!incoming) return
+  const incoming = update.message || update.edited_message
+  if (!incoming?.chat?.id) return
 
-  const allowedChatId = getTelegramAllowedChatId()
-  if (allowedChatId && incoming.chatId !== allowedChatId) {
-    console.warn(`[Telegram] Update ignorado para chat nao autorizado: ${incoming.chatId}`)
+  const chatId = String(incoming.chat.id)
+  const allowed = getTelegramAllowedChatId()
+  if (allowed && chatId !== allowed) {
+    await sendTelegramText(chatId, 'Chat nao autorizado neste bot.')
     return
   }
 
-  if (!incoming.text) {
-    await sendTelegramText(incoming.chatId, 'Envie uma mensagem de texto para eu responder.')
-    return
-  }
-
-  await sendTelegramTyping(incoming.chatId)
+  const text = normalizeTelegramText(incoming.text || incoming.caption)
+  if (!text) return
 
   try {
-    const resultado = await processarPipelineChat({
-      messages: [{ role: 'user', content: incoming.text }],
-      conversationId: `telegram-${incoming.chatId}`,
-      model: 'auto',
-    })
+    await telegramApi('sendChatAction', { chat_id: chatId, action: 'typing' })
 
-    await sendTelegramText(incoming.chatId, resultado.content || 'Não consegui gerar uma resposta agora.')
+    // Minimal path: prefer delegating to Aegis when configured
+    const aegisUrl = String(process.env.AEGIS_BASE_URL || '').replace(/\/$/, '')
+    if (aegisUrl) {
+      // Aegis already owns the user-facing webhook; this route is for API/tests only
+      await sendTelegramText(
+        chatId,
+        'Este endpoint do Morpheus nao e o hub principal. Use o webhook do Aegis (Jarvis Comando).',
+      )
+      return
+    }
+
+    const result = await processarPipelineChat({
+      message: text,
+      source: 'telegram',
+      chatId,
+    } as any)
+
+    const reply =
+      (result as any)?.reply
+      || (result as any)?.message
+      || (result as any)?.content
+      || 'Sem resposta do pipeline.'
+
+    await sendTelegramText(chatId, String(reply))
   } catch (error) {
     console.error('[Telegram] Falha ao processar update:', error)
     await sendTelegramText(
-      incoming.chatId,
+      chatId,
       `Falha ao processar sua mensagem: ${error instanceof Error ? error.message : String(error)}`,
     )
   }
 }
 
 async function registerTelegramWebhook() {
+  if (telegramManagedByAegis()) {
+    console.log('[Telegram] TELEGRAM_WEBHOOK_OWNER=aegis — setWebhook ignorado (hub no Aegis)')
+    return true
+  }
+
   const publicUrl = getPublicBackendUrl()
   if (!publicUrl) return false
 
@@ -189,6 +196,10 @@ async function pollTelegramUpdates() {
 }
 
 function startTelegramPolling() {
+  if (telegramManagedByAegis()) {
+    console.log('[Telegram] Polling desativado — hub no Aegis')
+    return
+  }
   if (pollingStarted) return
   pollingStarted = true
   console.log('[Telegram] Iniciando polling como fallback')
@@ -200,6 +211,11 @@ export async function setupTelegramIntegration() {
   const token = getTelegramBotToken()
   if (!token) {
     console.warn('[Telegram] TELEGRAM_BOT_TOKEN nao configurado; integração desativada')
+    return
+  }
+
+  if (telegramManagedByAegis()) {
+    console.log('[Telegram] Gerenciado pelo Aegis — setup de webhook/polling ignorado')
     return
   }
 
@@ -218,77 +234,34 @@ router.post('/send', authenticate, async (req, res) => {
     return res.status(400).json({ error: 'botId, message, and chatId required' })
   }
 
-  const tokenKey = `TELEGRAM_BOT_${botId.split('-')[1]}_TOKEN`
-  const token = process.env[tokenKey]
-
-  if (!token) {
-    return res.status(400).json({ error: `Token not configured for ${botId} (${tokenKey})` })
-  }
-
   try {
-    const tgRes = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text: message, parse_mode: 'HTML', disable_web_page_preview: true })
-    })
-    const data = await tgRes.json()
-    if (!tgRes.ok) throw new Error(data.description || tgRes.status)
-    res.json({ ok: true, result: data.result })
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) })
+    await sendTelegramText(chatId, message)
+    return res.json({ ok: true })
+  } catch (error) {
+    return res.status(500).json({ error: error instanceof Error ? error.message : String(error) })
   }
-})
-
-router.post('/broadcast', authenticate, async (req, res) => {
-  const { message, chatIds } = req.body
-  if (!message || !chatIds) {
-    return res.status(400).json({ error: 'message and chatIds required' })
-  }
-
-  const results = []
-  for (let i = 1; i <= 10; i++) {
-    const botId = `bot-${i}`
-    const chatId = chatIds[botId]
-    if (!chatId) continue
-    const tokenKey = `TELEGRAM_BOT_${i}_TOKEN`
-    const token = process.env[tokenKey]
-    if (!token) { results.push({ botId, ok: false, error: 'token not configured' }); continue }
-    try {
-      const tgRes = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: chatId, text: message, parse_mode: 'HTML', disable_web_page_preview: true })
-      })
-      const data = await tgRes.json()
-      results.push({ botId, ok: tgRes.ok, result: data.result })
-    } catch (err) {
-      results.push({ botId, ok: false, error: err instanceof Error ? err.message : String(err) })
-    }
-  }
-
-  res.json({ results })
 })
 
 router.post('/webhook', async (req: Request, res: Response) => {
   const secretToken = getTelegramWebhookSecret()
-  const headerSecret = normalizeTelegramText(req.header('x-telegram-bot-api-secret-token'))
-
-  if (secretToken && headerSecret !== secretToken) {
-    console.warn('[Telegram] Webhook rejeitado por secret_token invalido')
-    return res.status(401).json({ ok: false, error: 'Webhook secret invalido' })
+  if (secretToken) {
+    const header = req.header('x-telegram-bot-api-secret-token')
+    if (header !== secretToken) {
+      console.warn('[Telegram] Webhook rejeitado por secret_token invalido')
+      return res.status(401).json({ ok: false, error: 'Webhook secret invalido' })
+    }
   }
 
-  const update = req.body as TelegramUpdate
-  res.status(200).json({ ok: true })
-  void processTelegramUpdate(update)
+  res.json({ ok: true })
+  void processTelegramUpdate(req.body as TelegramUpdate)
 })
 
 router.get('/webhook/status', authenticate, async (_req: Request, res: Response) => {
   try {
     const data = await telegramApi('getWebhookInfo')
-    res.json({ ok: true, data })
+    return res.json({ ok: true, webhook: data })
   } catch (error) {
-    res.status(500).json({ ok: false, error: error instanceof Error ? error.message : String(error) })
+    return res.status(500).json({ error: error instanceof Error ? error.message : String(error) })
   }
 })
 
