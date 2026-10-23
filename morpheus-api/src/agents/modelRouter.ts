@@ -61,9 +61,9 @@ export const MODELOS: Record<string, ModeloConfig> = {
     uso: 'raciocínio complexo, debugging difícil',
   },
   openrouter_gemini: {
-    id: 'google/gemini-flash-1.5',
+    id: 'google/gemini-2.5-flash',
     provider: 'openrouter',
-    nome: 'Gemini Flash 1.5 (OpenRouter)',
+    nome: 'Gemini Flash (OpenRouter)',
     suportaTools: true,
     suportaVisao: true,
     temperatura: 0.5,
@@ -101,9 +101,10 @@ export const MODELOS: Record<string, ModeloConfig> = {
     uso: 'tarefas gerais com OpenAI',
   },
   google_gemini_flash: {
-    id: 'gemini-2.0-flash',
+    // Google retirou gemini-2.0-flash; usar linha atual
+    id: process.env.GOOGLE_GEMINI_MODEL || 'gemini-2.5-flash',
     provider: 'google',
-    nome: 'Gemini 2.0 Flash',
+    nome: 'Gemini Flash (Google)',
     suportaTools: true,
     suportaVisao: true,
     temperatura: 0.4,
