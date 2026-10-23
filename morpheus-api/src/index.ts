@@ -12,6 +12,7 @@ import credentialsRouter from './routes/credentials.js'
 import observabilityRouter from './routes/observability.js'
 import { authMiddleware } from './middleware/auth.js'
 import { rateLimitMiddleware } from './middleware/rateLimit.js'
+import { createAegisAgentFromEnv } from './lib/aegis-agent-sdk.js'
 
 const app = express()
 const PORT = process.env.PORT || 3001
@@ -22,6 +23,13 @@ app.use(rateLimitMiddleware)
 
 app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.0.0', name: 'MORPHEUS Nebuchadnezzar' }))
 app.use('/api/health', healthRouter)
+
+// Webhook receiver for Aegis remote commands
+app.post('/api/agent', async (req, res) => {
+  const { command_id, command_type, payload, issued_by } = req.body || {}
+  console.log('[Aegis webhook]', { command_id, command_type, issued_by, payload })
+  res.json({ ok: true, received: command_type || 'unknown', command_id })
+})
 
 app.use('/api/chat', chatRouter)
 app.use('/api/credentials', authMiddleware, credentialsRouter)
@@ -41,6 +49,27 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
 app.listen(PORT, () => {
   console.log(`[MORPHEUS API] Nebuchadnezzar v1.0 running on port ${PORT}`)
   void setupTelegramIntegration()
+
+  const aegis = createAegisAgentFromEnv(async (cmd) => {
+    console.log('[Aegis command]', cmd.command_type, cmd.payload)
+    try {
+      await fetch(`${process.env.AEGIS_BASE_URL}/api/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          from_agent_name: 'Morpheus',
+          content: `Ack command ${cmd.command_type} (${cmd.id})`,
+          type: 'log',
+        }),
+      })
+    } catch (e) {
+      console.warn('[Aegis] failed to ack message', e)
+    }
+  })
+  if (aegis) {
+    aegis.start()
+    console.log('[Aegis] heartbeat + command poll started')
+  }
 })
 
 export default app
