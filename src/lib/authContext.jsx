@@ -1,5 +1,12 @@
 import { createContext, useContext, useEffect, useState, useCallback } from 'react'
-import supabase from './supabaseClient'
+import {
+  login as apiLogin,
+  register as apiRegister,
+  fetchMe,
+  logout as apiLogout,
+  getStoredToken,
+  getStoredUser,
+} from './authApi'
 
 const AuthContext = createContext(null)
 
@@ -11,78 +18,103 @@ export function AuthProvider({ children }) {
 
   useEffect(() => {
     let cancelled = false
-    try {
-      supabase.auth.getSession().then(({ data }) => {
-        if (cancelled) return
-        const s = data?.session ?? null
-        setSession(s)
-        setUser(s?.user ?? null)
-        setAuthState(s ? 'authenticated' : 'unauthenticated')
-        setLoading(false)
-      }).catch((err) => {
-        console.error('[Auth] getSession error:', err)
-        if (!cancelled) {
-          setAuthState('unauthenticated')
-          setLoading(false)
-        }
-      })
 
-      const { data: { subscription } } = supabase.auth.onAuthStateChange((event, s) => {
-        if (cancelled) return
-        if (event === 'PASSWORD_RECOVERY') {
-          localStorage.setItem('morpheus_password_recovery', 'true')
-        }
-        if (event === 'SIGNED_IN') {
-          // Se o usuario acabou de redefinir a senha, limpa a flag
-          // (a limpeza definitiva acontece no ResetPasswordModal apos sucesso)
-          if (localStorage.getItem('morpheus_password_recovery') === 'true') {
-            // Mantem a flag ate o modal de reset ser usado
+    async function init() {
+      try {
+        const token = getStoredToken()
+        const cached = getStoredUser()
+        if (!token) {
+          if (!cancelled) {
+            setUser(null)
+            setSession(null)
+            setAuthState('unauthenticated')
           }
+          return
         }
-        setSession(s)
-        setUser(s?.user ?? null)
-        setAuthState(s ? 'authenticated' : 'unauthenticated')
-        setLoading(false)
-      })
-
-      return () => {
-        cancelled = true
-        subscription?.unsubscribe()
+        if (cached && !cancelled) {
+          setUser(cached)
+          setSession({ access_token: token, user: cached })
+          setAuthState('authenticated')
+        }
+        const me = await fetchMe()
+        if (cancelled) return
+        if (me?.user) {
+          setUser(me.user)
+          setSession({ access_token: token, user: me.user })
+          setAuthState('authenticated')
+        } else {
+          apiLogout()
+          setUser(null)
+          setSession(null)
+          setAuthState('unauthenticated')
+        }
+      } catch (err) {
+        console.error('[Auth] init error:', err)
+        apiLogout()
+        if (!cancelled) {
+          setUser(null)
+          setSession(null)
+          setAuthState('unauthenticated')
+        }
+      } finally {
+        if (!cancelled) setLoading(false)
       }
-    } catch (err) {
-      console.error('[Auth] Init error:', err)
-      setAuthState('unauthenticated')
-      setLoading(false)
+    }
+
+    init()
+    return () => {
+      cancelled = true
     }
   }, [])
 
   const signIn = useCallback(async (email, password) => {
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password })
-    if (error) throw error
+    const data = await apiLogin({ email, password })
+    setUser(data.user)
+    setSession({ access_token: data.access_token, user: data.user })
+    setAuthState('authenticated')
     return data
   }, [])
 
-  const signInWithMagicLink = useCallback(async (email) => {
-    const { data, error } = await supabase.auth.signInWithOtp({ email, options: { emailRedirectTo: window.location.origin } })
-    if (error) throw error
+  const signUp = useCallback(async (email, password, name) => {
+    const data = await apiRegister({ email, password, name })
+    setUser(data.user)
+    setSession({ access_token: data.access_token, user: data.user })
+    setAuthState('authenticated')
     return data
+  }, [])
+
+  const signInWithMagicLink = useCallback(async () => {
+    throw new Error('Magic link desativado. Use email e senha (auth Neon).')
   }, [])
 
   const signOut = useCallback(async () => {
-    const { error } = await supabase.auth.signOut()
-    if (error) throw error
+    apiLogout()
     setUser(null)
     setSession(null)
     setAuthState('unauthenticated')
   }, [])
 
-  const value = { user, session, loading, authState, signIn, signInWithMagicLink, signOut }
+  const value = {
+    user,
+    session,
+    loading,
+    authState,
+    signIn,
+    signUp,
+    signInWithMagicLink,
+    signOut,
+  }
 
   return (
     <AuthContext.Provider value={value}>
       {loading ? (
-        <div style={{ background: '#050a0f', minHeight: '100vh', display: 'flex',
-          alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{
+          background: '#050a0f',
+          minHeight: '100vh',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}>
           <div style={{ color: '#00FFFF', fontFamily: 'monospace', textAlign: 'center' }}>
             <div className="ldrs-helix" style={{ margin: '0 auto 16px' }} />
             <div>MORPHEUS INICIALIZANDO...</div>

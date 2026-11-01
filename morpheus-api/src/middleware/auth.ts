@@ -1,32 +1,30 @@
 import { Request, Response, NextFunction } from 'express'
-import { createClient } from '@supabase/supabase-js'
+import { verifyToken } from '../lib/jwt.js'
 
-function obterSupabaseAuthClient() {
-  const supabaseUrl = process.env.SUPABASE_URL || ''
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || ''
-
-  if (!supabaseUrl || !supabaseServiceKey) {
-    return null
-  }
-
-  return createClient(supabaseUrl, supabaseServiceKey)
-}
-
+/**
+ * Accepts Bearer JWT issued by Neon auth (/api/auth/login|register).
+ * No longer depends on Supabase Auth.
+ */
 export async function authMiddleware(req: Request, res: Response, next: NextFunction) {
-  const supabase = obterSupabaseAuthClient()
-  if (!supabase) {
-    return res.status(500).json({ error: 'Supabase nao configurado no backend' })
-  }
-
   const authHeader = req.headers.authorization
-  if (!authHeader?.startsWith('Bearer ')) return res.status(401).json({ error: 'Token nao fornecido' })
-  const token = authHeader.split(' ')[1]
+  if (!authHeader?.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Token nao fornecido' })
+  }
+  const token = authHeader.slice(7)
   try {
-    const { data: { user }, error } = await supabase.auth.getUser(token)
-    if (error || !user) return res.status(401).json({ error: 'Token invalido' })
-    ;(req as any).user = user
+    const payload = verifyToken(token)
+    if (!payload) {
+      return res.status(401).json({ error: 'Token invalido ou expirado' })
+    }
+    ;(req as Request & { user?: unknown }).user = {
+      id: payload.sub,
+      email: payload.email,
+      name: payload.name,
+    }
     next()
-  } catch { return res.status(401).json({ error: 'Falha na autenticacao' }) }
+  } catch {
+    return res.status(401).json({ error: 'Falha na autenticacao' })
+  }
 }
 
 export const authenticate = authMiddleware

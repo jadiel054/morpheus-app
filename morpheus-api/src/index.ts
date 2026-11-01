@@ -11,6 +11,7 @@ import healthRouter from './routes/health.js'
 import credentialsRouter from './routes/credentials.js'
 import observabilityRouter from './routes/observability.js'
 import agentExecuteRouter from './routes/agentExecute.js'
+import authNeonRouter from './routes/authNeon.js'
 import { authMiddleware } from './middleware/auth.js'
 import { rateLimitMiddleware } from './middleware/rateLimit.js'
 import { createAegisAgentFromEnv } from './lib/aegis-agent-sdk.js'
@@ -25,10 +26,12 @@ app.use(rateLimitMiddleware)
 app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.0.0', name: 'MORPHEUS Nebuchadnezzar' }))
 app.use('/api/health', healthRouter)
 
+// Neon JWT auth (replaces Supabase Auth)
+app.use('/api/auth', authNeonRouter)
+
 // Aegis execution contract
 app.use('/api/agent', agentExecuteRouter)
 
-// Webhook receiver for Aegis remote commands (legacy)
 app.post('/api/agent', async (req, res) => {
   const { command_id, command_type, payload, issued_by } = req.body || {}
   console.log('[Aegis webhook]', { command_id, command_type, issued_by, payload })

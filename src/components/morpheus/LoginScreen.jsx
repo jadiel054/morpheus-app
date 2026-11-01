@@ -1,29 +1,17 @@
 import { useState } from 'react'
-import { supabase } from '../../lib/supabaseClient'
+import { login, register } from '../../lib/authApi'
 
 export function LoginScreen({ onLoggedIn }) {
-  const [mode,     setMode]     = useState('login')  // 'login' | 'register'
-  const [email,    setEmail]    = useState('')
+  const [mode, setMode] = useState('login')
+  const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [name,     setName]     = useState('')
-  const [loading,  setLoading]  = useState(false)
-  const [error,    setError]    = useState('')
-  const [success,  setSuccess]  = useState('')
+  const [name, setName] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
 
   const handleForgotPassword = async () => {
-    if (!email) { setError('Digite seu email primeiro'); return }
-    setLoading(true)
-    setError('')
-    try {
-      await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: `${window.location.origin}/reset-password`
-      })
-      setSuccess(`Email de recuperacao enviado para ${email}. Verifique sua caixa de entrada.`)
-    } catch (err) {
-      setError('Erro ao enviar email de recuperacao')
-    } finally {
-      setLoading(false)
-    }
+    setError('Recuperacao de senha por email ainda nao esta ativa no auth Neon. Crie uma nova conta ou redefina via operador.')
   }
 
   const handleSubmit = async () => {
@@ -40,58 +28,27 @@ export function LoginScreen({ onLoggedIn }) {
     setLoading(true)
     try {
       if (mode === 'register') {
-        const { data, error: signUpError } = await supabase.auth.signUp({
-          email,
-          password,
-          options: {
-            data: { name: name || email.split('@')[0] }
-          }
-        })
-        if (signUpError) throw signUpError
-        if (data.session) {
-          onLoggedIn(data.session.user)
-          return
-        }
-        setSuccess('Conta criada! Verifique seu email para confirmar.')
-        setMode('login')
+        const data = await register({ email, password, name })
+        setSuccess('Conta criada com sucesso')
+        onLoggedIn?.(data.user)
       } else {
-        const { data, error: signInError } = await supabase.auth.signInWithPassword({
-          email,
-          password
-        })
-        if (signInError) throw signInError
-        onLoggedIn(data.user)
+        const data = await login({ email, password })
+        onLoggedIn?.(data.user)
       }
     } catch (err) {
       const msg = err.message || ''
-      if (msg.includes('Invalid login credentials'))
-        setError('Email ou senha incorretos')
-      else if (msg.includes('Email not confirmed'))
-        setError('Confirme seu email antes de entrar')
-      else if (msg.includes('User already registered'))
-        setError('Este email ja tem uma conta. Faca login.')
-      else if (msg.includes('Password should be'))
-        setError('Senha deve ter no minimo 6 caracteres')
-      else
+      if (msg.includes('Failed to fetch') || msg.includes('NetworkError')) {
+        setError('Nao foi possivel falar com a API. Verifique se o Morpheus API (Render) esta no ar.')
+      } else {
         setError(msg || 'Erro ao processar. Tente novamente.')
+      }
     } finally {
       setLoading(false)
     }
   }
 
   const handleMagicLink = async () => {
-    if (!email) { setError('Digite seu email primeiro'); return }
-    setLoading(true)
-    setError('')
-    try {
-      const { error } = await supabase.auth.signInWithOtp({ email })
-      if (error) throw error
-      setSuccess(`Magic link enviado para ${email}`)
-    } catch (err) {
-      setError(err.message || 'Erro ao enviar magic link')
-    } finally {
-      setLoading(false)
-    }
+    setError('Magic link desativado. Use email e senha (auth Neon).')
   }
 
   return (
@@ -102,7 +59,7 @@ export function LoginScreen({ onLoggedIn }) {
       alignItems: 'center',
       justifyContent: 'center',
       fontFamily: "'JetBrains Mono', monospace",
-      padding: '20px'
+      padding: '20px',
     }}>
       <div style={{
         background: '#0a1520',
@@ -111,166 +68,84 @@ export function LoginScreen({ onLoggedIn }) {
         padding: '32px 24px',
         width: '100%',
         maxWidth: '400px',
-        boxShadow: '0 0 40px rgba(0,255,255,0.08)'
+        boxShadow: '0 0 40px rgba(0,255,255,0.08)',
       }}>
         <div style={{ textAlign: 'center', marginBottom: '32px' }}>
-          <h1 style={{
-            color: '#00FFFF',
-            fontSize: '28px',
-            fontWeight: '900',
-            letterSpacing: '4px',
-            fontFamily: "'Orbitron', monospace",
-            marginBottom: '6px'
-          }}>
+          <h1 style={{ color: '#00FFFF', fontSize: '28px', fontWeight: '900', margin: 0, letterSpacing: '0.12em' }}>
             MORPHEUS
           </h1>
-          <p style={{ color: 'rgba(0,255,255,0.5)', fontSize: '11px', letterSpacing: '2px' }}>
+          <p style={{ color: '#3a6a7a', fontSize: '11px', marginTop: '8px', letterSpacing: '0.2em' }}>
             NEBUCHADNEZZAR v1.0
           </p>
         </div>
 
-        <div style={{
-          display: 'flex',
-          background: '#050a0f',
-          borderRadius: '8px',
-          padding: '4px',
-          marginBottom: '24px',
-          border: '1px solid #0d2030'
-        }}>
-          {['login', 'register'].map(m => (
-            <button
-              key={m}
-              onClick={() => { setMode(m); setError(''); setSuccess('') }}
-              style={{
-                flex: 1,
-                padding: '10px',
-                borderRadius: '6px',
-                border: 'none',
-                background: mode === m ? '#00FFFF' : 'transparent',
-                color: mode === m ? '#050a0f' : 'rgba(0,255,255,0.5)',
-                fontFamily: "'JetBrains Mono', monospace",
-                fontWeight: mode === m ? '700' : '400',
-                fontSize: '12px',
-                letterSpacing: '1px',
-                cursor: 'pointer',
-                transition: 'all 0.2s'
-              }}
-            >
-              {m === 'login' ? 'ENTRAR' : 'CRIAR CONTA'}
-            </button>
-          ))}
+        <div style={{ display: 'flex', marginBottom: '20px', background: '#061018', borderRadius: '8px', padding: '4px' }}>
+          <button
+            type="button"
+            onClick={() => { setMode('login'); setError(''); setSuccess('') }}
+            style={{
+              flex: 1, border: 'none', borderRadius: '6px', padding: '10px',
+              cursor: 'pointer', fontFamily: 'inherit', fontWeight: 700,
+              background: mode === 'login' ? '#00FFFF' : 'transparent',
+              color: mode === 'login' ? '#050a0f' : '#6a9aaa',
+            }}
+          >
+            ENTRAR
+          </button>
+          <button
+            type="button"
+            onClick={() => { setMode('register'); setError(''); setSuccess('') }}
+            style={{
+              flex: 1, border: 'none', borderRadius: '6px', padding: '10px',
+              cursor: 'pointer', fontFamily: 'inherit', fontWeight: 700,
+              background: mode === 'register' ? '#00FFFF' : 'transparent',
+              color: mode === 'register' ? '#050a0f' : '#6a9aaa',
+            }}
+          >
+            CRIAR CONTA
+          </button>
         </div>
 
         {mode === 'register' && (
-          <div style={{ marginBottom: '16px' }}>
-            <label style={{
-              color: 'rgba(0,255,255,0.7)',
-              fontSize: '11px',
-              letterSpacing: '2px',
-              display: 'block',
-              marginBottom: '8px'
-            }}>
-              NOME
-            </label>
+          <label style={{ display: 'block', marginBottom: '14px' }}>
+            <span style={{ color: '#3a8a9a', fontSize: '11px', letterSpacing: '0.08em' }}>NOME</span>
             <input
-              type="text"
               value={name}
-              onChange={e => setName(e.target.value)}
+              onChange={(e) => setName(e.target.value)}
               placeholder="Seu nome"
-              style={{
-                width: '100%',
-                background: '#050a0f',
-                border: '1px solid #0d2030',
-                borderRadius: '8px',
-                padding: '12px 16px',
-                color: '#e2e8f0',
-                fontFamily: "'JetBrains Mono', monospace",
-                fontSize: '14px',
-                outline: 'none',
-                boxSizing: 'border-box'
-              }}
-              onFocus={e => e.target.style.borderColor = '#00FFFF'}
-              onBlur={e => e.target.style.borderColor = '#0d2030'}
+              style={inputStyle}
             />
-          </div>
+          </label>
         )}
 
-        <div style={{ marginBottom: '16px' }}>
-          <label style={{
-            color: 'rgba(0,255,255,0.7)',
-            fontSize: '11px',
-            letterSpacing: '2px',
-            display: 'block',
-            marginBottom: '8px'
-          }}>
-            EMAIL
-          </label>
+        <label style={{ display: 'block', marginBottom: '14px' }}>
+          <span style={{ color: '#3a8a9a', fontSize: '11px', letterSpacing: '0.08em' }}>EMAIL</span>
           <input
             type="email"
             value={email}
-            onChange={e => setEmail(e.target.value)}
-            placeholder="seu@email.com"
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="voce@email.com"
             autoComplete="email"
-            style={{
-              width: '100%',
-              background: '#050a0f',
-              border: '1px solid #0d2030',
-              borderRadius: '8px',
-              padding: '12px 16px',
-              color: '#e2e8f0',
-              fontFamily: "'JetBrains Mono', monospace",
-              fontSize: '16px',
-              outline: 'none',
-              boxSizing: 'border-box'
-            }}
-            onFocus={e => e.target.style.borderColor = '#00FFFF'}
-            onBlur={e => e.target.style.borderColor = '#0d2030'}
+            style={inputStyle}
           />
-        </div>
+        </label>
 
-        <div style={{ marginBottom: '24px' }}>
-          <label style={{
-            color: 'rgba(0,255,255,0.7)',
-            fontSize: '11px',
-            letterSpacing: '2px',
-            display: 'block',
-            marginBottom: '8px'
-          }}>
-            SENHA
-          </label>
+        <label style={{ display: 'block', marginBottom: '18px' }}>
+          <span style={{ color: '#3a8a9a', fontSize: '11px', letterSpacing: '0.08em' }}>SENHA</span>
           <input
             type="password"
             value={password}
-            onChange={e => setPassword(e.target.value)}
-            placeholder={mode === 'register' ? 'Minimo 6 caracteres' : '........'}
-            autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
-            onKeyDown={e => e.key === 'Enter' && handleSubmit()}
-            style={{
-              width: '100%',
-              background: '#050a0f',
-              border: '1px solid #0d2030',
-              borderRadius: '8px',
-              padding: '12px 16px',
-              color: '#e2e8f0',
-              fontFamily: "'JetBrains Mono', monospace",
-              fontSize: '16px',
-              outline: 'none',
-              boxSizing: 'border-box'
-            }}
-            onFocus={e => e.target.style.borderColor = '#00FFFF'}
-            onBlur={e => e.target.style.borderColor = '#0d2030'}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="••••••••"
+            autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+            style={inputStyle}
           />
-        </div>
+        </label>
 
         {error && (
           <div style={{
-            color: '#ff0080',
-            fontSize: '12px',
-            marginBottom: '16px',
-            padding: '10px 12px',
-            background: 'rgba(255,0,128,0.08)',
-            borderRadius: '6px',
-            border: '1px solid rgba(255,0,128,0.2)'
+            background: '#2a0a18', border: '1px solid #5a2030', color: '#ff6b8a',
+            borderRadius: '8px', padding: '10px 12px', marginBottom: '14px', fontSize: '13px',
           }}>
             {error}
           </div>
@@ -278,82 +153,72 @@ export function LoginScreen({ onLoggedIn }) {
 
         {success && (
           <div style={{
-            color: '#00FFFF',
-            fontSize: '12px',
-            marginBottom: '16px',
-            padding: '10px 12px',
-            background: 'rgba(0,255,255,0.08)',
-            borderRadius: '6px',
-            border: '1px solid rgba(0,255,255,0.2)'
+            background: '#0a2018', border: '1px solid #1a5a40', color: '#5dffb0',
+            borderRadius: '8px', padding: '10px 12px', marginBottom: '14px', fontSize: '13px',
           }}>
             {success}
           </div>
         )}
 
         <button
+          type="button"
           onClick={handleSubmit}
           disabled={loading}
           style={{
-            width: '100%',
-            padding: '14px',
-            background: loading ? 'rgba(0,255,255,0.3)' : '#00FFFF',
-            color: '#050a0f',
-            border: 'none',
-            borderRadius: '8px',
-            fontFamily: "'JetBrains Mono', monospace",
-            fontWeight: '700',
-            fontSize: '14px',
-            letterSpacing: '2px',
-            cursor: loading ? 'not-allowed' : 'pointer',
-            marginBottom: '16px',
-            transition: 'all 0.2s'
+            width: '100%', border: 'none', borderRadius: '8px', padding: '14px',
+            background: '#00FFFF', color: '#050a0f', fontWeight: 800,
+            fontFamily: 'inherit', cursor: loading ? 'wait' : 'pointer', marginBottom: '10px',
           }}
         >
-          {loading
-            ? 'PROCESSANDO...'
-            : mode === 'login' ? 'ENTRAR' : 'CRIAR CONTA'
-          }
+          {loading ? '...' : mode === 'login' ? 'ENTRAR' : 'CRIAR CONTA'}
         </button>
 
         <button
+          type="button"
           onClick={handleMagicLink}
           disabled={loading}
           style={{
-            width: '100%',
-            padding: '12px',
-            background: 'transparent',
-            color: 'rgba(0,255,255,0.6)',
-            border: '1px solid rgba(0,255,255,0.2)',
-            borderRadius: '8px',
-            fontFamily: "'JetBrains Mono', monospace",
-            fontSize: '12px',
-            letterSpacing: '1px',
-            cursor: 'pointer'
+            width: '100%', border: '1px solid #1a3040', borderRadius: '8px', padding: '12px',
+            background: 'transparent', color: '#5a8a9a', fontFamily: 'inherit',
+            cursor: 'pointer', marginBottom: '12px',
           }}
         >
           USAR MAGIC LINK
         </button>
 
-        {mode === 'login' && (
+        <div style={{ textAlign: 'center' }}>
           <button
+            type="button"
             onClick={handleForgotPassword}
             style={{
-              background: 'transparent',
-              border: 'none',
-              color: 'rgba(0,255,255,0.5)',
-              fontSize: '12px',
-              fontFamily: 'monospace',
-              cursor: 'pointer',
-              padding: '8px',
-              marginTop: '8px',
-              textDecoration: 'underline',
-              width: '100%',
+              background: 'none', border: 'none', color: '#3a9aaa', cursor: 'pointer',
+              fontFamily: 'inherit', fontSize: '12px', textDecoration: 'underline',
             }}
           >
             Esqueci minha senha
           </button>
-        )}
+        </div>
+
+        <p style={{ color: '#2a4a55', fontSize: '10px', textAlign: 'center', marginTop: '20px' }}>
+          Auth Neon · sem Supabase
+        </p>
       </div>
     </div>
   )
 }
+
+const inputStyle = {
+  display: 'block',
+  width: '100%',
+  marginTop: '6px',
+  padding: '12px 14px',
+  borderRadius: '8px',
+  border: '1px solid #1a3040',
+  background: '#f4f7fa',
+  color: '#0a1520',
+  fontFamily: 'inherit',
+  fontSize: '14px',
+  boxSizing: 'border-box',
+}
+
+export default LoginScreen
