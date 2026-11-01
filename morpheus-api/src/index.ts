@@ -10,6 +10,7 @@ import emailRouter from './routes/email.js'
 import healthRouter from './routes/health.js'
 import credentialsRouter from './routes/credentials.js'
 import observabilityRouter from './routes/observability.js'
+import agentExecuteRouter from './routes/agentExecute.js'
 import { authMiddleware } from './middleware/auth.js'
 import { rateLimitMiddleware } from './middleware/rateLimit.js'
 import { createAegisAgentFromEnv } from './lib/aegis-agent-sdk.js'
@@ -24,7 +25,10 @@ app.use(rateLimitMiddleware)
 app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.0.0', name: 'MORPHEUS Nebuchadnezzar' }))
 app.use('/api/health', healthRouter)
 
-// Webhook receiver for Aegis remote commands
+// Aegis execution contract
+app.use('/api/agent', agentExecuteRouter)
+
+// Webhook receiver for Aegis remote commands (legacy)
 app.post('/api/agent', async (req, res) => {
   const { command_id, command_type, payload, issued_by } = req.body || {}
   console.log('[Aegis webhook]', { command_id, command_type, issued_by, payload })
@@ -57,18 +61,18 @@ app.listen(PORT, () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          from_agent_name: 'Morpheus',
-          content: `Ack command ${cmd.command_type} (${cmd.id})`,
+          from_agent_name: process.env.AEGIS_AGENT_NAME || 'Morpheus',
+          content: `Ack command ${cmd.command_type}`,
           type: 'log',
         }),
       })
     } catch (e) {
-      console.warn('[Aegis] failed to ack message', e)
+      console.error('[Aegis ack]', e)
     }
   })
   if (aegis) {
     aegis.start()
-    console.log('[Aegis] heartbeat + command poll started')
+    console.log('[MORPHEUS API] Aegis agent SDK started')
   }
 })
 
