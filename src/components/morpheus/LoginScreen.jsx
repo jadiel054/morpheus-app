@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { login, register } from '../../lib/authApi'
+import { useState, useEffect } from 'react'
+import { login, register, warmupApi } from '../../lib/authApi'
 
 export function LoginScreen({ onLoggedIn }) {
   const [mode, setMode] = useState('login')
@@ -9,6 +9,19 @@ export function LoginScreen({ onLoggedIn }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
+  const [warming, setWarming] = useState(true)
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      setWarming(true)
+      await warmupApi()
+      if (!cancelled) setWarming(false)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const handleForgotPassword = async () => {
     setError('Recuperacao de senha por email ainda nao esta ativa no auth Neon. Crie uma nova conta ou redefina via operador.')
@@ -27,6 +40,8 @@ export function LoginScreen({ onLoggedIn }) {
     }
     setLoading(true)
     try {
+      // Ensure API is awake before auth
+      await warmupApi()
       if (mode === 'register') {
         const data = await register({ email, password, name })
         setSuccess('Conta criada com sucesso')
@@ -37,11 +52,7 @@ export function LoginScreen({ onLoggedIn }) {
       }
     } catch (err) {
       const msg = err.message || ''
-      if (msg.includes('Failed to fetch') || msg.includes('NetworkError')) {
-        setError('Nao foi possivel falar com a API. Verifique se o Morpheus API (Render) esta no ar.')
-      } else {
-        setError(msg || 'Erro ao processar. Tente novamente.')
-      }
+      setError(msg || 'Erro ao processar. Tente novamente.')
     } finally {
       setLoading(false)
     }
@@ -78,6 +89,15 @@ export function LoginScreen({ onLoggedIn }) {
             NEBUCHADNEZZAR v1.0
           </p>
         </div>
+
+        {warming && (
+          <div style={{
+            background: '#0a1820', border: '1px solid #1a4050', color: '#5ad0e0',
+            borderRadius: '8px', padding: '10px 12px', marginBottom: '14px', fontSize: '12px',
+          }}>
+            Acordando API no Render (cold start)... aguarde ate ~1 min em 3G.
+          </div>
+        )}
 
         <div style={{ display: 'flex', marginBottom: '20px', background: '#061018', borderRadius: '8px', padding: '4px' }}>
           <button
@@ -170,7 +190,7 @@ export function LoginScreen({ onLoggedIn }) {
             fontFamily: 'inherit', cursor: loading ? 'wait' : 'pointer', marginBottom: '10px',
           }}
         >
-          {loading ? '...' : mode === 'login' ? 'ENTRAR' : 'CRIAR CONTA'}
+          {loading ? 'Aguarde (API pode demorar no Render)...' : mode === 'login' ? 'ENTRAR' : 'CRIAR CONTA'}
         </button>
 
         <button
@@ -200,7 +220,7 @@ export function LoginScreen({ onLoggedIn }) {
         </div>
 
         <p style={{ color: '#2a4a55', fontSize: '10px', textAlign: 'center', marginTop: '20px' }}>
-          Auth Neon · sem Supabase
+          Auth Neon · API Render (cold start ate ~60s)
         </p>
       </div>
     </div>
