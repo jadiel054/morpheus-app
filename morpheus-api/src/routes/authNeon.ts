@@ -41,7 +41,7 @@ router.post('/register', async (req: Request, res: Response) => {
       return res.status(409).json({ error: 'Este email ja tem uma conta. Faca login.' })
     }
 
-    const passwordHash = await hashPassword(password)
+    const passwordHash = hashPassword(password)
     const rows = await sql`
       INSERT INTO morpheus_users (email, password_hash, display_name)
       VALUES (${email}, ${passwordHash}, ${displayName})
@@ -102,7 +102,7 @@ router.post('/login', async (req: Request, res: Response) => {
         }
       | undefined
 
-    if (!row || !(await verifyPassword(password, row.password_hash))) {
+    if (!row || !verifyPassword(password, row.password_hash)) {
       return res.status(401).json({ error: 'Email ou senha incorretos' })
     }
 
